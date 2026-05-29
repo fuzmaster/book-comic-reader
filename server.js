@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -6,11 +7,20 @@ import { exec } from "node:child_process";
 import express from "express";
 import yauzl from "yauzl";
 import sharp from "sharp";
+import { pdf } from "pdf-to-img";
+import multer from "multer";
+import archiver from "archiver";
+import { createExtractorFromData } from "node-unrar-js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LIBRARY = path.join(__dirname, "library");          // converted comics (CBZ)
 const FILES = path.join(__dirname, "files");              // source library root
 const THUMB_DIR = path.join(__dirname, ".cache", "thumbs");
+const META_DIR = path.join(__dirname, ".cache", "meta");
+const PDFPAGE_DIR = path.join(__dirname, ".cache", "pdfpages");
+const UPLOAD_TMP = path.join(__dirname, ".cache", "uploads");
+const PROGRESS_FILE = path.join(__dirname, ".cache", "progress.json");
+const PDF_SCALE = 2.2; // render resolution for PDF pages
 const ICON_DIR = path.join(__dirname, "public", "icons");
 const PORT = process.env.PORT || 4288;
 const THUMB_WIDTH = 360;
@@ -136,6 +146,100 @@ async function getCover(id, book) {
   return thumb;
 }
 
+// Read one named entry from any zip file into a Buffer (null if missing).
+function readZipEntry(file, name) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(file, { lazyEntries: true }, (err, zip) => {
+      if (err) return reject(err);
+      let found = false;
+      zip.on("entry", (entry) => {
+        if (entry.fileName === name) {
+          found = true;
+          zip.openReadStream(entry, (e2, stream) => {
+            if (e2) return reject(e2);
+            const chunks = [];
+            stream.on("data", (c) => chunks.push(c));
+            stream.on("end", () => resolve(Buffer.concat(chunks)));
+            stream.on("error", reject);
+          });
+        } else zip.readEntry();
+      });
+      zip.on("end", () => { if (!found) resolve(null); });
+      zip.on("error", reject);
+      zip.readEntry();
+    });
+  });
+}
+
+// Find the cover image path inside an EPUB by reading its OPF manifest.
+async function epubCoverPath(file) {
+  const container = (await readZipEntry(file, "META-INF/container.xml"))?.toString("utf8");
+  if (!container) return null;
+  const opfPath = container.match(/full-path="([^"]+)"/)?.[1];
+  if (!opfPath) return null;
+  const opf = (await readZipEntry(file, opfPath))?.toString("utf8");
+  if (!opf) return null;
+  const opfDir = path.posix.dirname(opfPath);
+  const resolve = (href) => {
+    const p = decodeURIComponent(href);
+    return opfDir === "." ? p : path.posix.join(opfDir, p);
+  };
+  const itemHref = (id) =>
+    opf.match(new RegExp(`<item[^>]*\\bid="${id}"[^>]*\\bhref="([^"]+)"`))?.[1] ||
+    opf.match(new RegExp(`<item[^>]*\\bhref="([^"]+)"[^>]*\\bid="${id}"`))?.[1];
+
+  // 1) EPUB3 manifest item flagged as the cover image.
+  let href = opf.match(/<item[^>]*\bproperties="[^"]*cover-image[^"]*"[^>]*\bhref="([^"]+)"/)?.[1] ||
+             opf.match(/<item[^>]*\bhref="([^"]+)"[^>]*\bproperties="[^"]*cover-image[^"]*"/)?.[1];
+  // 2) EPUB2 <meta name="cover" content="ID">.
+  if (!href) {
+    const coverId = opf.match(/<meta[^>]*\bname="cover"[^>]*\bcontent="([^"]+)"/)?.[1] ||
+                    opf.match(/<meta[^>]*\bcontent="([^"]+)"[^>]*\bname="cover"/)?.[1];
+    if (coverId) href = itemHref(coverId);
+  }
+  // 3) Any image whose href looks like a cover.
+  if (!href) href = opf.match(/<item[^>]*\bhref="([^"]*cover[^"]*\.(?:jpe?g|png))"/i)?.[1];
+  return href ? resolve(href) : null;
+}
+
+// Opened PDF documents (pdf.js), cached in memory so we don't re-parse per page.
+const pdfDocs = new Map();
+function getPdfDoc(id, file) {
+  if (!pdfDocs.has(id)) pdfDocs.set(id, pdf(file, { scale: PDF_SCALE }));
+  return pdfDocs.get(id);
+}
+
+// Render (and cache to disk) one PDF page as a JPEG. n is 0-based.
+async function getPdfPage(id, file, n) {
+  const out = path.join(PDFPAGE_DIR, id, `${n}.jpg`);
+  if (fs.existsSync(out)) return out;
+  const document = await getPdfDoc(id, file);
+  if (n < 0 || n >= document.length) throw new Error("page out of range");
+  const png = await document.getPage(n + 1); // pdf-to-img is 1-based
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  await sharp(png).jpeg({ quality: 80 }).toFile(out);
+  return out;
+}
+
+// Generate (and cache) a cover thumbnail for a PDF (page 1) or EPUB (embedded).
+async function getDocCover(id, doc) {
+  const thumb = path.join(THUMB_DIR, `${id}.jpg`);
+  if (fs.existsSync(thumb)) return thumb;
+  let raw;
+  if (doc.type === "pdf") {
+    const document = await pdf(doc.file, { scale: 1.4 });
+    raw = await document.getPage(1);
+  } else {
+    const coverPath = await epubCoverPath(doc.file);
+    if (!coverPath) throw new Error("no epub cover");
+    raw = await readZipEntry(doc.file, coverPath);
+    if (!raw) throw new Error("epub cover entry missing");
+  }
+  fs.mkdirSync(THUMB_DIR, { recursive: true });
+  await sharp(raw).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).jpeg({ quality: 74 }).toFile(thumb);
+  return thumb;
+}
+
 // id -> { file, type }  for documents (pdf/epub) read in place.
 const docs = new Map();
 
@@ -178,6 +282,80 @@ function scanDocs(sub) {
   }
   return items;
 }
+
+// ---- Reading progress (synced across devices via the server) ----
+function loadProgress() {
+  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, "utf8")); }
+  catch { return {}; }
+}
+function writeProgress(store) {
+  fs.mkdirSync(path.dirname(PROGRESS_FILE), { recursive: true });
+  const tmp = PROGRESS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(store));
+  fs.renameSync(tmp, PROGRESS_FILE); // atomic replace
+}
+
+// Look up metadata for a title via the free Open Library API.
+async function fetchOpenLibrary(q) {
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}` +
+    `&limit=1&fields=title,author_name,first_publish_year,cover_i,ratings_average,key`;
+  const r = await fetch(url, { headers: { "User-Agent": "book-comic-reader" } });
+  const j = await r.json();
+  const d = j.docs && j.docs[0];
+  if (!d) return { found: false };
+  let description = "";
+  if (d.key) {
+    try {
+      const w = await fetch(`https://openlibrary.org${d.key}.json`).then((x) => x.json());
+      description = typeof w.description === "string" ? w.description : w.description?.value || "";
+    } catch {}
+  }
+  return {
+    found: true,
+    title: d.title || "",
+    author: (d.author_name && d.author_name[0]) || "",
+    year: d.first_publish_year || null,
+    rating: typeof d.ratings_average === "number" ? Math.round(d.ratings_average * 10) / 10 : null,
+    coverUrl: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
+    description: (description || "").replace(/\s+/g, " ").trim().slice(0, 700),
+  };
+}
+
+// Cached metadata lookup (keyed by item id; q is the search title).
+async function getMeta(id, q, refresh) {
+  const cacheFile = path.join(META_DIR, `${id}.json`);
+  if (!refresh && fs.existsSync(cacheFile)) return JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+  const meta = await fetchOpenLibrary(q);
+  fs.mkdirSync(META_DIR, { recursive: true });
+  fs.writeFileSync(cacheFile, JSON.stringify(meta));
+  return meta;
+}
+
+// Convert an uploaded .cbr (RAR) file into a .cbz at outFile.
+async function cbrFileToCbz(cbrPath, outFile) {
+  const buf = await fsp.readFile(cbrPath);
+  const extractor = await createExtractorFromData({ data: Uint8Array.from(buf).buffer });
+  const extracted = extractor.extract();
+  const files = [...extracted.files]
+    .filter((f) => !f.fileHeader.flags.directory && IMG_RE.test(f.fileHeader.name))
+    .sort((a, b) => naturalCompare(a.fileHeader.name, b.fileHeader.name));
+  if (files.length === 0) throw new Error("no images in archive");
+  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(outFile);
+    const archive = archiver("zip", { store: true });
+    out.on("close", resolve);
+    archive.on("error", reject);
+    archive.pipe(out);
+    files.forEach((f, i) => {
+      const ext = path.extname(f.fileHeader.name).toLowerCase();
+      archive.append(Buffer.from(f.extraction), { name: `${String(i + 1).padStart(4, "0")}${ext}` });
+    });
+    archive.finalize();
+  });
+}
+
+const safeName = (s) => s.replace(/[\\/:*?"<>|]/g, "_").trim();
 
 // Build the full catalog: Comics + document categories.
 function scanAll() {
@@ -236,7 +414,20 @@ ensureIcons().catch((e) => console.error("icon generation failed:", e.message));
 
 let catalog = scanAll();
 
+// Watch the library/source folders and rescan automatically (debounced).
+let rescanTimer = null;
+for (const dir of [FILES, LIBRARY]) {
+  if (!fs.existsSync(dir)) continue;
+  try {
+    fs.watch(dir, { recursive: true }, () => {
+      clearTimeout(rescanTimer);
+      rescanTimer = setTimeout(() => { catalog = scanAll(); }, 1500);
+    });
+  } catch {}
+}
+
 const app = express();
+app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 // Vendored reader libraries (EPUB rendering).
 app.use("/vendor/epubjs", express.static(path.join(__dirname, "node_modules", "epubjs", "dist")));
@@ -247,6 +438,110 @@ app.get("/api/library", (req, res) => res.json(catalog));
 app.get("/api/rescan", (req, res) => {
   catalog = scanAll();
   res.json(catalog);
+});
+
+// Upload new content. category: comics | books | learning. series: comics only.
+fs.mkdirSync(UPLOAD_TMP, { recursive: true });
+const upload = multer({ dest: UPLOAD_TMP, limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
+app.post("/api/upload", upload.array("files", 50), async (req, res) => {
+  const category = (req.body.category || "").toLowerCase();
+  const series = (req.body.series || "").trim();
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: "no files" });
+  const added = [], skipped = [];
+  try {
+    for (const f of files) {
+      const name = path.basename(f.originalname);
+      const ext = path.extname(name).toLowerCase();
+      if (category === "comics") {
+        const s = safeName(series || name.replace(/\.(cbz|cbr)$/i, "")) || "Comics";
+        const dir = path.join(LIBRARY, s);
+        if (ext === ".cbz") {
+          fs.mkdirSync(dir, { recursive: true });
+          await fsp.rename(f.path, path.join(dir, name));
+          added.push(name);
+        } else if (ext === ".cbr") {
+          await cbrFileToCbz(f.path, path.join(dir, name.replace(/\.cbr$/i, ".cbz")));
+          await fsp.unlink(f.path).catch(() => {});
+          added.push(name);
+        } else { await fsp.unlink(f.path).catch(() => {}); skipped.push(name); }
+      } else if (category === "books" || category === "learning") {
+        if (ext === ".pdf" || ext === ".epub") {
+          const dir = path.join(FILES, category);
+          fs.mkdirSync(dir, { recursive: true });
+          await fsp.rename(f.path, path.join(dir, name));
+          added.push(name);
+        } else { await fsp.unlink(f.path).catch(() => {}); skipped.push(name); }
+      } else { await fsp.unlink(f.path).catch(() => {}); skipped.push(name); }
+    }
+    catalog = scanAll();
+    res.json({ ok: true, added, skipped });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+  }
+});
+
+// Reading progress, shared across all your devices.
+app.get("/api/progress", (req, res) => res.json(loadProgress()));
+
+app.post("/api/progress", (req, res) => {
+  const { id, data } = req.body || {};
+  if (!id || typeof data !== "object") return res.status(400).json({ error: "bad request" });
+  const store = loadProgress();
+  // Keep whichever record is newer (last-write-wins by timestamp).
+  if (!store[id] || (data.t || 0) >= (store[id].t || 0)) store[id] = data;
+  writeProgress(store);
+  res.json({ ok: true });
+});
+
+// Metadata lookup for an item (q = search title, supplied by the client).
+app.get("/api/meta/:id", async (req, res) => {
+  const q = (req.query.q || "").toString().trim();
+  if (!q) return res.status(400).json({ found: false, error: "missing q" });
+  try {
+    res.json(await getMeta(req.params.id, q, req.query.refresh === "1"));
+  } catch {
+    res.status(502).json({ found: false, error: "lookup failed" });
+  }
+});
+
+// Cover thumbnail for a document (PDF page 1 / EPUB embedded cover).
+app.get("/api/doc/:id/cover", async (req, res) => {
+  const doc = docs.get(req.params.id);
+  if (!doc) return res.status(404).end();
+  try {
+    const thumb = await getDocCover(req.params.id, doc);
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    res.sendFile(thumb);
+  } catch {
+    res.status(404).end(); // no cover available — client shows a placeholder
+  }
+});
+
+// Page count (and type) for a document. PDFs are paged; EPUBs report type only.
+app.get("/api/doc/:id/info", async (req, res) => {
+  const doc = docs.get(req.params.id);
+  if (!doc) return res.status(404).json({ error: "not found" });
+  if (doc.type !== "pdf") return res.json({ type: doc.type });
+  try {
+    const d = await getPdfDoc(req.params.id, doc.file);
+    res.json({ type: "pdf", pageCount: d.length });
+  } catch {
+    res.status(500).json({ error: "read failed" });
+  }
+});
+
+// Render a single PDF page as an image (n is 0-based), cached on disk.
+app.get("/api/doc/:id/page/:n", async (req, res) => {
+  const doc = docs.get(req.params.id);
+  if (!doc || doc.type !== "pdf") return res.status(404).end();
+  try {
+    const file = await getPdfPage(req.params.id, doc.file, parseInt(req.params.n, 10));
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    res.sendFile(file);
+  } catch {
+    res.status(404).end();
+  }
 });
 
 // Serve a document (PDF/EPUB) file in place, with Range support via sendFile.

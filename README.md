@@ -22,6 +22,13 @@ Learning…), with **pinch-to-zoom comics**, **right-to-left manga mode**, a
 - **Manga mode** — per-series **right-to-left** reading toggle (flips page-turn direction, tap zones, and the slider).
 - **PDF viewer** — opens PDFs in the browser's built-in viewer, with an "open in new tab" fallback.
 - **EPUB reader** — paginated reflowable reading (powered by epub.js) with adjustable font size, a progress slider, and saved position.
+- **Real cover previews** — PDF first-page thumbnails and EPUB embedded cover art, generated and cached automatically (gradient placeholder if none).
+- **Metadata enrichment** — an ⓘ button on any item fetches cover art, author, year, rating, and a description from the free [Open Library](https://openlibrary.org) catalog (cached locally).
+- **3D page-flip** — drag a page sideways and it rotates around the spine like a real book (also fires from tap zones and arrow keys). Works on comics *and* PDFs.
+- **Add from the browser** — a guided upload wizard (`+ Add` button) lets you import comics (CBR auto-converted), PDFs, and EPUBs right from your phone.
+- **Search & filter** — search box plus category chips for the growing library.
+- **Auto-detect** — drop files into the right folder and they appear automatically, no manual rescan.
+- **Cross-device progress sync** — reading position saved server-side, so you can pick up on any device.
 - **Continue Reading** — a shelf of in-progress items, and **auto-advance to the next comic volume** when you finish one.
 - **Remembers your place** — reading progress saved per item, with progress bars on covers.
 - **Fast covers** — auto-generated, cached comic cover thumbnails so the library loads instantly.

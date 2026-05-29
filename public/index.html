@@ -17,8 +17,15 @@
   <!-- Library -->
   <div id="library" class="view">
     <header class="topbar">
-      <h1>My Comics</h1>
-      <button id="rescan" class="ghost-btn" title="Rescan library">Rescan</button>
+      <div class="topbar-row">
+        <h1>My Library</h1>
+        <div class="topbar-actions">
+          <button id="add-btn" class="ghost-btn">+ Add</button>
+          <button id="rescan" class="ghost-btn" title="Rescan library">⟳</button>
+        </div>
+      </div>
+      <input id="search" class="search-input" type="search" placeholder="Search titles…" />
+      <div id="filter-chips" class="chips"></div>
     </header>
     <div id="shelves"></div>
   </div>
@@ -28,10 +35,18 @@
     <div id="stage" class="stage">
       <img id="page" alt="" />
     </div>
+    <div id="flip" class="flip hidden">
+      <img id="flip-under" class="flip-page" alt="" />
+      <div id="flip-leaf" class="flip-leaf">
+        <img id="flip-front" class="flip-page" alt="" />
+        <div class="flip-shade"></div>
+      </div>
+    </div>
     <div id="reader-ui" class="reader-ui hidden">
       <div class="reader-top">
         <button id="back" class="ghost-btn">‹ Library</button>
         <span id="reader-title"></span>
+        <a id="reader-open" class="ghost-btn hidden" target="_blank" rel="noopener" title="Open original PDF">↗</a>
         <button id="dir-toggle" class="ghost-btn" title="Reading direction">L→R</button>
         <button id="fit-toggle" class="ghost-btn">Fit: Height</button>
       </div>
@@ -68,6 +83,57 @@
     <div class="doc-bottom">
       <input id="epub-slider" type="range" min="0" max="1000" value="0" />
       <span id="epub-pct">0%</span>
+    </div>
+  </div>
+
+  <!-- Details / metadata modal -->
+  <div id="details" class="modal hidden">
+    <div class="modal-card">
+      <button id="details-close" class="modal-close" title="Close">×</button>
+      <div class="details-body">
+        <img id="details-cover" class="details-cover" alt="" />
+        <div class="details-info">
+          <h2 id="details-title"></h2>
+          <div id="details-sub" class="details-sub"></div>
+          <div id="details-rating" class="details-rating"></div>
+          <p id="details-desc" class="details-desc"></p>
+          <button id="details-read" class="primary-btn">Read</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add-content wizard -->
+  <div id="wizard" class="modal hidden">
+    <div class="modal-card">
+      <button id="wizard-close" class="modal-close" title="Close">×</button>
+      <h2 class="wizard-title">Add to your library</h2>
+
+      <div class="wizard-step">
+        <div class="wizard-label">1. Category</div>
+        <div id="wizard-cats" class="chips"></div>
+      </div>
+
+      <div id="wizard-series-wrap" class="wizard-step hidden">
+        <div class="wizard-label">2. Series name</div>
+        <input id="wizard-series" class="search-input" list="series-list" placeholder="e.g. Yu-Gi-Oh!" />
+        <datalist id="series-list"></datalist>
+      </div>
+
+      <div class="wizard-step">
+        <div class="wizard-label">Files</div>
+        <label id="wizard-drop" class="wizard-drop">
+          <input id="wizard-files" type="file" multiple hidden />
+          <span id="wizard-drop-text">Tap to choose files, or drop them here</span>
+        </label>
+        <div id="wizard-list" class="wizard-list"></div>
+      </div>
+
+      <div class="wizard-progress hidden" id="wizard-progress"><div id="wizard-bar"></div></div>
+      <div class="wizard-actions">
+        <span id="wizard-msg" class="wizard-msg"></span>
+        <button id="wizard-upload" class="primary-btn" disabled>Upload</button>
+      </div>
     </div>
   </div>
 
