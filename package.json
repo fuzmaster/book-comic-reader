@@ -1,0 +1,18 @@
+{
+  "name": "book-comic-reader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Convert and read comic books on desktop or phone",
+  "scripts": {
+    "convert": "node convert.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "express": "^4.21.2",
+    "node-unrar-js": "^2.0.2",
+    "sharp": "^0.34.5",
+    "yauzl": "^3.2.0"
+  }
+}

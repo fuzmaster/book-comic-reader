@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Your comic books — never publish copyrighted content
+/raw files/
+/library/
+
+# Generated at runtime
+.cache/
+public/icons/
+
+# Editor / OS / tooling
+.claude/
+*.log
+.DS_Store
+Thumbs.db

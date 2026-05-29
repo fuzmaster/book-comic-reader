@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#111418" />
+  <title>Comic Reader</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Comics" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Library -->
+  <div id="library" class="view">
+    <header class="topbar">
+      <h1>My Comics</h1>
+      <button id="rescan" class="ghost-btn" title="Rescan library">Rescan</button>
+    </header>
+    <div id="shelves"></div>
+  </div>
+
+  <!-- Reader -->
+  <div id="reader" class="view hidden">
+    <div id="stage" class="stage">
+      <img id="page" alt="" />
+    </div>
+    <div id="reader-ui" class="reader-ui hidden">
+      <div class="reader-top">
+        <button id="back" class="ghost-btn">‹ Library</button>
+        <span id="reader-title"></span>
+        <button id="dir-toggle" class="ghost-btn" title="Reading direction">L→R</button>
+        <button id="fit-toggle" class="ghost-btn">Fit: Height</button>
+      </div>
+      <div class="reader-bottom">
+        <input id="slider" type="range" min="0" max="0" value="0" />
+        <span id="counter">0 / 0</span>
+      </div>
+    </div>
+    <div id="spinner" class="spinner hidden"></div>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
