@@ -8,11 +8,19 @@ import yauzl from "yauzl";
 import sharp from "sharp";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LIBRARY = path.join(__dirname, "library");
+const LIBRARY = path.join(__dirname, "library");          // converted comics (CBZ)
+const FILES = path.join(__dirname, "files");              // source library root
 const THUMB_DIR = path.join(__dirname, ".cache", "thumbs");
 const ICON_DIR = path.join(__dirname, "public", "icons");
 const PORT = process.env.PORT || 4288;
 const THUMB_WIDTH = 360;
+
+// Document categories read in place (not converted). Folder -> display name.
+const DOC_CATEGORIES = [
+  { dir: "books", name: "Books" },
+  { dir: "learning", name: "Learning" },
+];
+const DOC_TYPE = { ".pdf": "pdf", ".epub": "epub" };
 
 const IMG_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;
 const MIME = {
@@ -128,12 +136,13 @@ async function getCover(id, book) {
   return thumb;
 }
 
-// Scan the library folder and build the catalog (series -> volumes).
-function scanLibrary() {
-  books.clear();
-  const catalog = [];
-  if (!fs.existsSync(LIBRARY)) return catalog;
+// id -> { file, type }  for documents (pdf/epub) read in place.
+const docs = new Map();
 
+// Comics: each series folder of CBZ files becomes a shelf of volume items.
+function scanComics() {
+  const shelves = [];
+  if (!fs.existsSync(LIBRARY)) return shelves;
   const seriesDirs = fs
     .readdirSync(LIBRARY, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -142,21 +151,48 @@ function scanLibrary() {
 
   for (const series of seriesDirs) {
     const dir = path.join(LIBRARY, series);
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => /\.cbz$/i.test(f))
-      .sort(naturalCompare);
+    const files = fs.readdirSync(dir).filter((f) => /\.cbz$/i.test(f)).sort(naturalCompare);
     if (files.length === 0) continue;
-
-    const volumes = files.map((file) => {
+    const items = files.map((file) => {
       const id = Buffer.from(path.join(series, file)).toString("base64url");
       books.set(id, { file: path.join(dir, file), entries: null });
-      const title = file.replace(/\.cbz$/i, "");
-      return { id, title, series };
+      return { id, type: "comic", title: file.replace(/\.cbz$/i, ""), series };
     });
-    catalog.push({ series, volumes });
+    shelves.push({ title: series, items });
   }
-  return catalog;
+  return shelves;
+}
+
+// Documents: top-level PDF/EPUB files in a category folder become items.
+function scanDocs(sub) {
+  const dir = path.join(FILES, sub);
+  if (!fs.existsSync(dir)) return [];
+  const items = [];
+  for (const name of fs.readdirSync(dir).sort(naturalCompare)) {
+    const type = DOC_TYPE[path.extname(name).toLowerCase()];
+    if (!type) continue;
+    const rel = path.join(sub, name);
+    const id = Buffer.from(rel).toString("base64url");
+    docs.set(id, { file: path.join(dir, name), type });
+    items.push({ id, type, title: name.replace(/\.[^.]+$/, "") });
+  }
+  return items;
+}
+
+// Build the full catalog: Comics + document categories.
+function scanAll() {
+  books.clear();
+  docs.clear();
+  const categories = [];
+
+  const comics = scanComics();
+  if (comics.length) categories.push({ name: "Comics", shelves: comics });
+
+  for (const cat of DOC_CATEGORIES) {
+    const items = scanDocs(cat.dir);
+    if (items.length) categories.push({ name: cat.name, shelves: [{ title: null, items }] });
+  }
+  return { categories };
 }
 
 // ---- PWA icons (generated once from an SVG book glyph) ----
@@ -198,16 +234,28 @@ async function ensureIcons() {
 }
 ensureIcons().catch((e) => console.error("icon generation failed:", e.message));
 
-let catalog = scanLibrary();
+let catalog = scanAll();
 
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
+// Vendored reader libraries (EPUB rendering).
+app.use("/vendor/epubjs", express.static(path.join(__dirname, "node_modules", "epubjs", "dist")));
+app.use("/vendor/jszip", express.static(path.join(__dirname, "node_modules", "jszip", "dist")));
 
 app.get("/api/library", (req, res) => res.json(catalog));
 
 app.get("/api/rescan", (req, res) => {
-  catalog = scanLibrary();
+  catalog = scanAll();
   res.json(catalog);
+});
+
+// Serve a document (PDF/EPUB) file in place, with Range support via sendFile.
+app.get("/api/doc/:id/file", (req, res) => {
+  const doc = docs.get(req.params.id);
+  if (!doc) return res.status(404).end();
+  res.setHeader("Content-Type", doc.type === "epub" ? "application/epub+zip" : "application/pdf");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.sendFile(doc.file, (err) => { if (err && !res.headersSent) res.status(500).end(); });
 });
 
 app.get("/api/book/:id/info", async (req, res) => {
@@ -254,11 +302,11 @@ const httpServer = app.listen(PORT, "0.0.0.0", () => {
       if (net.family === "IPv4" && !net.internal) lan.push(net.address);
     }
   }
-  console.log(`\n  Comic reader running.`);
+  console.log(`\n  Library reader running.`);
   console.log(`  On this PC:   http://localhost:${PORT}`);
   for (const ip of lan) console.log(`  On your phone: http://${ip}:${PORT}   (same WiFi)`);
-  console.log(`\n  Library: ${LIBRARY}`);
-  if (catalog.length === 0) console.log(`  (empty — run "npm run convert" first)`);
+  const counts = catalog.categories.map((c) => `${c.name}: ${c.shelves.reduce((n, s) => n + s.items.length, 0)}`);
+  console.log(`\n  ${counts.join("  |  ") || "empty — add files to ./files and run \"npm run convert\" for comics"}`);
   console.log("");
   openBrowser(`http://localhost:${PORT}`);
 });

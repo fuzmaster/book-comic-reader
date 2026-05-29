@@ -14,17 +14,35 @@ const els = {
   counter: document.getElementById("counter"),
   spinner: document.getElementById("spinner"),
   toast: document.getElementById("toast"),
+  // Document readers
+  pdfView: document.getElementById("pdf-view"),
+  pdfFrame: document.getElementById("pdf-frame"),
+  pdfTitle: document.getElementById("pdf-title"),
+  pdfOpen: document.getElementById("pdf-open"),
+  pdfBack: document.getElementById("pdf-back"),
+  epubView: document.getElementById("epub-view"),
+  epubArea: document.getElementById("epub-area"),
+  epubTitle: document.getElementById("epub-title"),
+  epubBack: document.getElementById("epub-back"),
+  epubPrev: document.getElementById("epub-prev"),
+  epubNext: document.getElementById("epub-next"),
+  epubSlider: document.getElementById("epub-slider"),
+  epubPct: document.getElementById("epub-pct"),
+  epubFontUp: document.getElementById("epub-font-up"),
+  epubFontDn: document.getElementById("epub-font-dn"),
 };
 
 const state = {
-  book: null,        // { id, title, series }
+  view: "library",   // library | comic | pdf | epub
+  book: null,        // current comic { id, title, series }
+  doc: null,         // current document { id, title, type }
   pageCount: 0,
   index: 0,
   rtl: false,        // right-to-left (manga) reading direction
   // Default: fit-width on portrait/phone screens, fit-height on wide desktop.
   fit: localStorage.getItem("fit") || (window.innerHeight > window.innerWidth ? "width" : "height"),
 };
-let catalog = [];    // full library, kept for Continue Reading + next-volume
+let catalog = { categories: [] };  // full library, kept for Continue Reading + next-volume
 
 // ---------- Zoom & pan ----------
 // The page image is positioned via a CSS transform: translate(tx,ty) scale(s),
@@ -88,6 +106,11 @@ function readProgress(id) {
   try { return JSON.parse(localStorage.getItem(progressKey(id))); }
   catch { return null; }
 }
+// Save document progress, merging with any existing fields.
+function saveDocProgress(id, extra) {
+  const prev = readProgress(id) || {};
+  localStorage.setItem(progressKey(id), JSON.stringify({ ...prev, ...extra, t: Date.now() }));
+}
 
 // ---------- Library ----------
 async function loadLibrary() {
@@ -96,82 +119,153 @@ async function loadLibrary() {
   renderLibrary();
 }
 
-// In-progress volumes (not finished), most recently read first.
-function continueReading() {
-  const items = [];
-  for (const shelf of catalog) {
-    for (const vol of shelf.volumes) {
-      const p = readProgress(vol.id);
-      if (!p || !p.t || p.index <= 0) continue;
-      if (p.pageCount && p.index >= p.pageCount - 1) continue; // finished
-      items.push({ vol, t: p.t });
-    }
-  }
-  items.sort((a, b) => b.t - a.t);
-  return items.slice(0, 12).map((i) => i.vol);
+// Every item across the whole catalog (flattened).
+function allItems() {
+  const out = [];
+  for (const cat of catalog.categories)
+    for (const shelf of cat.shelves)
+      for (const it of shelf.items) out.push(it);
+  return out;
 }
 
-function shelfSection(title, volumes) {
-  const section = document.createElement("section");
-  section.className = "shelf";
-  const h2 = document.createElement("h2");
-  h2.textContent = title;
-  section.appendChild(h2);
+// The fraction read (0..1) for an item, or null if unknown / not started.
+function progressFraction(item, p) {
+  if (!p) return null;
+  if (item.type === "comic") {
+    if (!p.pageCount || p.pageCount < 2) return null;
+    return p.index / (p.pageCount - 1);
+  }
+  if (item.type === "epub") return typeof p.percent === "number" ? p.percent : null;
+  return null; // pdf: no reliable page progress
+}
+
+// Recently-opened / in-progress items, most recent first.
+function continueReading() {
+  const rows = [];
+  for (const it of allItems()) {
+    const p = readProgress(it.id);
+    if (!p || !p.t) continue;
+    if (it.type === "comic") {
+      if (p.index <= 0) continue;                       // not really started
+      if (p.pageCount && p.index >= p.pageCount - 1) continue; // finished
+    }
+    if (it.type === "epub" && p.percent >= 0.99) continue;     // finished
+    rows.push({ item: it, t: p.t });
+  }
+  rows.sort((a, b) => b.t - a.t);
+  return rows.slice(0, 12).map((r) => r.item);
+}
+
+function shelfRow(items) {
   const row = document.createElement("div");
   row.className = "row";
-  for (const vol of volumes) row.appendChild(makeCard(vol));
-  section.appendChild(row);
-  return section;
+  for (const it of items) row.appendChild(makeCard(it));
+  return row;
 }
 
 function renderLibrary() {
   els.shelves.innerHTML = "";
-  if (!catalog.length) {
+  if (!catalog.categories.length) {
     els.shelves.innerHTML =
-      '<div class="empty">No comics found.<br>Run <b>npm run convert</b> to build your library, then tap Rescan.</div>';
+      '<div class="empty">Nothing here yet.<br>Add files to the <b>files/</b> folder' +
+      ' (and run <b>npm run convert</b> for comics), then tap Rescan.</div>';
     return;
   }
+
   const cont = continueReading();
-  if (cont.length) els.shelves.appendChild(shelfSection("Continue Reading", cont));
-  for (const shelf of catalog) {
-    els.shelves.appendChild(shelfSection(shelf.series, shelf.volumes));
+  if (cont.length) {
+    const sec = document.createElement("section");
+    sec.className = "category";
+    const h = document.createElement("h2");
+    h.className = "category-title";
+    h.textContent = "Continue Reading";
+    sec.appendChild(h);
+    sec.appendChild(shelfRow(cont));
+    els.shelves.appendChild(sec);
+  }
+
+  for (const cat of catalog.categories) {
+    const sec = document.createElement("section");
+    sec.className = "category";
+    const h = document.createElement("h2");
+    h.className = "category-title";
+    h.textContent = cat.name;
+    sec.appendChild(h);
+    for (const shelf of cat.shelves) {
+      if (shelf.title) {
+        const sub = document.createElement("h3");
+        sub.style.cssText = "font-size:15px;margin:14px 4px 10px;color:var(--muted);";
+        sub.textContent = shelf.title;
+        sec.appendChild(sub);
+      }
+      sec.appendChild(shelfRow(shelf.items));
+    }
+    els.shelves.appendChild(sec);
   }
 }
 
-function makeCard(vol) {
+function makeCard(item) {
   const card = document.createElement("div");
   card.className = "card";
+  let coverEl;
 
-  const cover = document.createElement("img");
-  cover.className = "cover";
-  cover.loading = "lazy";
-  cover.src = `/api/book/${vol.id}/cover`;
-  card.appendChild(cover);
+  if (item.type === "comic") {
+    coverEl = document.createElement("div");
+    coverEl.className = "cover";
+    const img = document.createElement("img");
+    img.className = "cover-img";
+    img.loading = "lazy";
+    img.src = `/api/book/${item.id}/cover`;
+    coverEl.appendChild(img);
+  } else {
+    coverEl = document.createElement("div");
+    coverEl.className = `cover doc ${item.type}`;
+    const name = document.createElement("div");
+    name.className = "doc-name";
+    name.textContent = item.title;
+    const badge = document.createElement("div");
+    badge.className = "doc-badge";
+    badge.textContent = item.type.toUpperCase();
+    coverEl.appendChild(badge);
+    coverEl.appendChild(name);
+  }
+  card.appendChild(coverEl);
 
-  const prog = readProgress(vol.id);
-  if (prog && prog.pageCount > 1) {
+  const frac = progressFraction(item, readProgress(item.id));
+  if (frac != null) {
     const bar = document.createElement("div");
     bar.className = "progress-bar";
-    bar.style.width = `${Math.round((prog.index / (prog.pageCount - 1)) * 100)}%`;
-    cover.parentElement.appendChild(bar);
+    bar.style.width = `${Math.round(frac * 100)}%`;
+    coverEl.appendChild(bar);
   }
 
   const label = document.createElement("div");
   label.className = "card-label";
-  label.textContent = vol.title;
+  label.textContent = item.title;
   card.appendChild(label);
 
-  card.addEventListener("click", () => openBook(vol));
+  card.addEventListener("click", () => openItem(item));
   return card;
+}
+
+// Route an item to the right reader.
+function openItem(item) {
+  if (item.type === "comic") openBook(item);
+  else if (item.type === "pdf") openPdf(item);
+  else if (item.type === "epub") openEpub(item);
 }
 
 // ---------- Reader ----------
 // startAt: "first" | "last" | null (null = resume saved progress).
 async function openBook(vol, startAt = null) {
   state.book = vol;
+  state.doc = null;
+  state.view = "comic";
   state.rtl = localStorage.getItem(`rtl:${vol.series}`) === "1";
   els.readerTitle.textContent = vol.title;
   els.library.classList.add("hidden");
+  els.pdfView.classList.add("hidden");
+  els.epubView.classList.add("hidden");
   els.reader.classList.remove("hidden");
   applyFit();
   applyDir();
@@ -192,15 +286,24 @@ async function openBook(vol, startAt = null) {
   location.hash = `read/${vol.id}`;
 }
 
-function closeBook() {
-  state.book = null;
+// Close whichever reader is open and return to the library.
+function leaveViewer() {
+  if (epubRendition) { try { epubBook.destroy(); } catch {} epubRendition = null; epubBook = null; }
   els.reader.classList.add("hidden");
-  els.library.classList.remove("hidden");
+  els.pdfView.classList.add("hidden");
+  els.epubView.classList.add("hidden");
   els.page.removeAttribute("src");
+  els.pdfFrame.src = "about:blank";
+  els.epubArea.innerHTML = "";
+  state.book = null;
+  state.doc = null;
+  state.view = "library";
+  els.library.classList.remove("hidden");
   hideUi();
   location.hash = "";
   loadLibrary(); // refresh progress bars
 }
+const closeBook = leaveViewer; // back-compat alias
 
 function showPage(i) {
   if (i < 0 || i >= state.pageCount) return;
@@ -237,17 +340,98 @@ function prev() {
 
 // Find the volume before/after the current one within the same series.
 function neighborVolume(dir) {
-  const shelf = catalog.find((s) => s.series === state.book.series);
+  const comics = catalog.categories.find((c) => c.name === "Comics");
+  const shelf = comics && comics.shelves.find((s) => s.title === state.book.series);
   if (!shelf) return null;
-  const i = shelf.volumes.findIndex((v) => v.id === state.book.id);
+  const i = shelf.items.findIndex((v) => v.id === state.book.id);
   const j = i + dir;
-  return i >= 0 && j >= 0 && j < shelf.volumes.length ? shelf.volumes[j] : null;
+  return i >= 0 && j >= 0 && j < shelf.items.length ? shelf.items[j] : null;
 }
 function openAdjacentVolume(dir) {
   const nv = neighborVolume(dir);
   if (!nv) { showToast(dir > 0 ? "Last volume in series" : "First volume in series"); return; }
   showToast(`${dir > 0 ? "Next" : "Previous"}: ${nv.title}`);
   openBook(nv, dir > 0 ? "first" : "last");
+}
+
+// ---------- PDF reader (native browser rendering) ----------
+function openPdf(item) {
+  state.doc = item;
+  state.book = null;
+  state.view = "pdf";
+  const url = `/api/doc/${item.id}/file`;
+  els.pdfTitle.textContent = item.title;
+  els.pdfOpen.href = url;
+  els.pdfFrame.src = url;
+  els.library.classList.add("hidden");
+  els.reader.classList.add("hidden");
+  els.epubView.classList.add("hidden");
+  els.pdfView.classList.remove("hidden");
+  saveDocProgress(item.id, {});           // record "recently opened"
+  location.hash = `pdf/${item.id}`;
+}
+
+// ---------- EPUB reader (epub.js) ----------
+let epubBook = null, epubRendition = null;
+let epubFont = parseInt(localStorage.getItem("epubFont") || "100", 10);
+
+async function openEpub(item) {
+  state.doc = item;
+  state.book = null;
+  state.view = "epub";
+  els.epubTitle.textContent = item.title;
+  els.library.classList.add("hidden");
+  els.reader.classList.add("hidden");
+  els.pdfView.classList.add("hidden");
+  els.epubView.classList.remove("hidden");
+  els.epubArea.innerHTML = "";
+  els.epubPct.textContent = "…";
+
+  const prog = readProgress(item.id);
+  // Load the archive as binary so epub.js opens it as a zip (its URL heuristic
+  // expects a ".epub" suffix or a directory, which our API route isn't).
+  const buf = await fetch(`/api/doc/${item.id}/file`).then((r) => r.arrayBuffer());
+  if (state.view !== "epub" || state.doc !== item) return; // user navigated away
+  epubBook = ePub(buf);
+  epubRendition = epubBook.renderTo("epub-area", {
+    width: "100%", height: "100%", flow: "paginated", spread: "auto", manager: "default",
+  });
+  epubRendition.themes.register("night", {
+    body: { background: "#111418", color: "#e8eaed" },
+    a: { color: "#5b9dff" },
+  });
+  epubRendition.themes.select("night");
+  epubRendition.themes.fontSize(epubFont + "%");
+  epubRendition.display(prog && prog.cfi ? prog.cfi : undefined);
+
+  // Build a location index so we can show / seek by percentage.
+  epubBook.ready
+    .then(() => epubBook.locations.generate(1600))
+    .then(() => { if (state.view === "epub") updateEpubProgress(epubRendition.currentLocation()); })
+    .catch(() => {});
+
+  epubRendition.on("relocated", (loc) => {
+    saveDocProgress(item.id, {
+      cfi: loc.start.cfi,
+      percent: epubBook.locations.length() ? epubBook.locations.percentageFromCfi(loc.start.cfi) : 0,
+    });
+    updateEpubProgress(loc);
+  });
+  location.hash = `epub/${item.id}`;
+}
+
+function updateEpubProgress(loc) {
+  let percent = 0;
+  try {
+    if (loc && epubBook.locations.length()) percent = epubBook.locations.percentageFromCfi(loc.start.cfi);
+  } catch {}
+  els.epubPct.textContent = `${Math.round(percent * 100)}%`;
+  els.epubSlider.value = Math.round(percent * 1000);
+}
+function setEpubFont(delta) {
+  epubFont = Math.min(220, Math.max(70, epubFont + delta));
+  localStorage.setItem("epubFont", String(epubFont));
+  if (epubRendition) epubRendition.themes.fontSize(epubFont + "%");
 }
 
 // ---------- Fit mode ----------
@@ -415,7 +599,7 @@ els.stage.addEventListener("wheel", (e) => {
   zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - rect.left, e.clientY - rect.top);
 }, { passive: false });
 
-els.back.addEventListener("click", closeBook);
+els.back.addEventListener("click", leaveViewer);
 els.fitToggle.addEventListener("click", toggleFit);
 els.dirToggle.addEventListener("click", toggleDir);
 els.rescan.addEventListener("click", async () => {
@@ -427,7 +611,29 @@ els.slider.addEventListener("input", (e) => {
   showUi();
 });
 
+// Document reader controls
+els.pdfBack.addEventListener("click", leaveViewer);
+els.epubBack.addEventListener("click", leaveViewer);
+els.epubPrev.addEventListener("click", () => epubRendition && epubRendition.prev());
+els.epubNext.addEventListener("click", () => epubRendition && epubRendition.next());
+els.epubFontUp.addEventListener("click", () => setEpubFont(10));
+els.epubFontDn.addEventListener("click", () => setEpubFont(-10));
+els.epubSlider.addEventListener("change", (e) => {
+  if (!epubRendition || !epubBook.locations.length()) return;
+  epubRendition.display(epubBook.locations.cfiFromPercentage(parseInt(e.target.value, 10) / 1000));
+});
+
 document.addEventListener("keydown", (e) => {
+  if (state.view === "epub") {
+    if (e.key === "ArrowLeft") epubRendition && epubRendition.prev();
+    else if (e.key === "ArrowRight") epubRendition && epubRendition.next();
+    else if (e.key === "Escape") leaveViewer();
+    return;
+  }
+  if (state.view === "pdf") {
+    if (e.key === "Escape") leaveViewer();
+    return;
+  }
   if (!state.book) return;
   if (e.key === " " || e.key === "ArrowDown") { next(); e.preventDefault(); }
   else if (e.key === "ArrowUp") { prev(); e.preventDefault(); }
@@ -444,7 +650,8 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("resize", () => { if (state.book) resetView(); });
 
 window.addEventListener("hashchange", () => {
-  if (!location.hash.startsWith("#read/") && state.book) closeBook();
+  const inViewer = /^#(read|pdf|epub)\//.test(location.hash);
+  if (!inViewer && state.view !== "library") leaveViewer();
 });
 
 // Register the service worker (only activates in a secure context: https/localhost).

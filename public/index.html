@@ -44,6 +44,35 @@
     <div id="toast" class="toast hidden"></div>
   </div>
 
+  <!-- PDF viewer (native browser rendering inside an iframe) -->
+  <div id="pdf-view" class="view hidden">
+    <div class="doc-top">
+      <button id="pdf-back" class="ghost-btn">‹ Library</button>
+      <span id="pdf-title" class="doc-title"></span>
+      <a id="pdf-open" class="ghost-btn" target="_blank" rel="noopener">Open ↗</a>
+    </div>
+    <iframe id="pdf-frame" title="PDF document"></iframe>
+  </div>
+
+  <!-- EPUB reader (epub.js) -->
+  <div id="epub-view" class="view hidden">
+    <div class="doc-top">
+      <button id="epub-back" class="ghost-btn">‹ Library</button>
+      <span id="epub-title" class="doc-title"></span>
+      <button id="epub-font-dn" class="ghost-btn" title="Smaller text">A−</button>
+      <button id="epub-font-up" class="ghost-btn" title="Larger text">A+</button>
+    </div>
+    <div id="epub-area"></div>
+    <button id="epub-prev" class="epub-nav epub-prev">‹</button>
+    <button id="epub-next" class="epub-nav epub-next">›</button>
+    <div class="doc-bottom">
+      <input id="epub-slider" type="range" min="0" max="1000" value="0" />
+      <span id="epub-pct">0%</span>
+    </div>
+  </div>
+
+  <script src="/vendor/jszip/jszip.min.js"></script>
+  <script src="/vendor/epubjs/epub.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

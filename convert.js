@@ -6,7 +6,7 @@ import archiver from "archiver";
 import { createExtractorFromData } from "node-unrar-js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RAW = path.join(__dirname, "raw files");
+const RAW = path.join(__dirname, "files", "comics");
 const OUT = path.join(__dirname, "library");
 
 const IMG_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;

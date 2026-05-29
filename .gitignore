@@ -1,7 +1,8 @@
 # Dependencies
 node_modules/
 
-# Your comic books — never publish copyrighted content
+# Your library — never publish copyrighted content
+/files/
 /raw files/
 /library/
 
