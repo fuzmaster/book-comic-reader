@@ -6,6 +6,10 @@ const els = {
   filterChips: document.getElementById("filter-chips"),
   sortSelect: document.getElementById("sort-select"),
   addBtn: document.getElementById("add-btn"),
+  statsBtn: document.getElementById("stats-btn"),
+  stats: document.getElementById("stats"),
+  statsClose: document.getElementById("stats-close"),
+  statsBody: document.getElementById("stats-body"),
   seriesView: document.getElementById("series-view"),
   seriesBack: document.getElementById("series-back"),
   seriesName: document.getElementById("series-name"),
@@ -176,6 +180,65 @@ function saveDocProgress(id, extra) {
   const prev = readProgress(id) || {};
   persistProgress(id, { ...prev, ...extra, t: Date.now() });
 }
+
+// ---------- Reading stats tracking ----------
+let pageStartTime = 0;
+function postStats(pages, ms) {
+  if (!pages && !ms) return;
+  fetch("/api/stats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pages, ms }),
+  }).catch(() => {});
+}
+function recordPageTurn() {
+  if (!pageStartTime) return; // first page of a session: no prior dwell to record
+  const dt = Math.min(60000, Math.max(0, Date.now() - pageStartTime));
+  postStats(1, dt);
+}
+function flushReadingSession() {
+  if (!pageStartTime) return;
+  const dt = Math.min(60000, Math.max(0, Date.now() - pageStartTime));
+  postStats(0, dt);
+  pageStartTime = 0;
+}
+
+function fmtTime(ms) {
+  const m = Math.round((ms || 0) / 60000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h}h ${mm}m`;
+}
+function localDayKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+async function openStats() {
+  els.stats.classList.remove("hidden");
+  els.statsBody.textContent = "Loading…";
+  let s;
+  try { s = await fetch("/api/stats").then((r) => r.json()); }
+  catch { els.statsBody.textContent = "Couldn't load stats."; return; }
+  const today = s.byDay && s.byDay[localDayKey()] || { pages: 0, ms: 0 };
+  let weekP = 0, weekMs = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const r = s.byDay && s.byDay[localDayKey(d)];
+    if (r) { weekP += r.pages || 0; weekMs += r.ms || 0; }
+  }
+  els.statsBody.innerHTML = `
+    <div class="stats-section">Today</div>
+    <div class="stats-row"><span>Pages read</span><strong>${today.pages}</strong></div>
+    <div class="stats-row"><span>Time spent</span><strong>${fmtTime(today.ms)}</strong></div>
+    <div class="stats-section">Last 7 days</div>
+    <div class="stats-row"><span>Pages read</span><strong>${weekP}</strong></div>
+    <div class="stats-row"><span>Time spent</span><strong>${fmtTime(weekMs)}</strong></div>
+    <div class="stats-section">All-time</div>
+    <div class="stats-row"><span>Pages read</span><strong>${s.totalPages || 0}</strong></div>
+    <div class="stats-row"><span>Time spent</span><strong>${fmtTime(s.totalMs)}</strong></div>
+  `;
+}
+function closeStats() { els.stats.classList.add("hidden"); }
 
 // Merge server progress with local progress (newest timestamp wins) at startup.
 async function syncProgress() {
@@ -668,6 +731,7 @@ async function openBook(vol, startAt = null) {
 
 // Close whichever reader is open and return to the library.
 function leaveViewer() {
+  flushReadingSession();
   if (epubRendition) { try { epubBook.destroy(); } catch {} epubRendition = null; epubBook = null; }
   els.reader.classList.add("hidden");
   els.epubView.classList.add("hidden");
@@ -693,7 +757,9 @@ function pageUrl(i) {
 
 function showPage(i) {
   if (i < 0 || i >= state.pageCount) return;
+  if (state.index !== i) recordPageTurn(); // count the time we spent on the previous page
   state.index = i;
+  pageStartTime = Date.now();
   if (state.spread) {
     els.pageLeft.src = pageUrl(i);
     const hasRight = i + 1 < state.pageCount;
@@ -725,7 +791,7 @@ function next() {
   const step = state.spread ? 2 : 1;
   const target = state.index + step;
   if (state.index < state.pageCount - 1) {
-    if (!state.spread && animatedTurn(true)) return;
+    if (animatedTurn(true)) return;
     showPage(Math.min(target, state.pageCount - 1));
   } else if (state.book) openAdjacentVolume(1);
 }
@@ -734,7 +800,7 @@ function prev() {
   const step = state.spread ? 2 : 1;
   const target = state.index - step;
   if (state.index > 0) {
-    if (!state.spread && animatedTurn(false)) return;
+    if (animatedTurn(false)) return;
     showPage(Math.max(target, 0));
   } else if (state.book) openAdjacentVolume(-1);
 }
@@ -821,6 +887,8 @@ async function openEpub(item) {
     .catch(() => {});
 
   epubRendition.on("relocated", (loc) => {
+    recordPageTurn();
+    pageStartTime = Date.now();
     saveDocProgress(item.id, {
       cfi: loc.start.cfi,
       percent: epubBook.locations.length() ? epubBook.locations.percentageFromCfi(loc.start.cfi) : 0,
@@ -938,28 +1006,54 @@ function animatedTurn(forward) {
   const dirSign = forward ? (state.rtl ? 1 : -1) : (state.rtl ? -1 : 1);
   if (!startFlip(dirSign)) return false;
   flipBusy = true;
-  void els.flipLeaf.offsetWidth; // commit the 0° starting state before animating
-  requestAnimationFrame(() => { if (flipSession) { flipSession.p = 1; endFlip(); } });
+  void els.flipLeaf.offsetWidth; // force a reflow so the 0° starting state is committed
+  flipSession.p = 1;
+  endFlip(); // synchronously kick off the completion animation
   return true;
 }
 
 // Begin a flip in response to a horizontal drag. dirSign: -1 left, +1 right.
 function startFlip(dirSign) {
-  if (!state.src || view.scale > 1.01 || state.spread) return false;
+  if (!state.src || view.scale > 1.01) return false;
   const forward = dirSign < 0 ? !state.rtl : state.rtl; // left-drag advances in LTR
-  const target = state.index + (forward ? 1 : -1);
-  if (target < 0 || target >= state.pageCount) return false; // no page to turn to
-  const r = els.page.getBoundingClientRect();
+  const step = state.spread ? 2 : 1;
+  const target = state.index + (forward ? step : -step);
+  if (target < 0 || target >= state.pageCount) return false;
+
+  // In spread mode the overlay covers only the lifting slot; in single mode it
+  // covers the whole page.
+  let slotEl, leafSrc, underSrc, leftPivot;
+  if (state.spread) {
+    // The "outer" slot (away from the spine) lifts. In LTR that's the right
+    // slot for next, the left slot for prev. RTL flips which slot is outer.
+    const liftRight = forward !== state.rtl;
+    if (liftRight) {
+      slotEl = els.pageRight;
+      leafSrc = pageUrl(state.index + 1);
+      underSrc = pageUrl(target); // the new left page will live where the leaf is now
+      leftPivot = true;            // pivot the right slot around the spine on its left
+    } else {
+      slotEl = els.pageLeft;
+      leafSrc = pageUrl(state.index);
+      underSrc = pageUrl(target + 1); // the page that ends up under as right of new spread
+      leftPivot = false;
+    }
+  } else {
+    slotEl = els.page;
+    leafSrc = els.page.currentSrc || els.page.src;
+    underSrc = pageUrl(target);
+    leftPivot = dirSign < 0;
+  }
+  const r = slotEl.getBoundingClientRect();
   if (r.width < 2) return false;
-  const leftPivot = dirSign < 0;
   for (const el of [els.flipUnder, els.flipLeaf]) {
     el.style.left = r.left + "px";
     el.style.top = r.top + "px";
     el.style.width = r.width + "px";
     el.style.height = r.height + "px";
   }
-  els.flipUnder.src = pageUrl(target);
-  els.flipFront.src = els.page.currentSrc || els.page.src;
+  els.flipUnder.src = underSrc;
+  els.flipFront.src = leafSrc;
   els.flipLeaf.style.transformOrigin = leftPivot ? "0% 50%" : "100% 50%";
   els.flipLeaf.style.transition = "none";
   els.flipLeaf.style.transform = "rotateY(0deg)";
@@ -1171,10 +1265,13 @@ els.sortSelect.addEventListener("change", (e) => {
 });
 els.seriesBack.addEventListener("click", closeSeries);
 els.addBtn.addEventListener("click", openWizard);
+els.statsBtn.addEventListener("click", openStats);
+els.statsClose.addEventListener("click", closeStats);
+els.stats.addEventListener("click", (e) => { if (e.target === els.stats) closeStats(); });
 
 // ---------- Add-content wizard ----------
 const WIZ_CATS = [
-  { label: "Comics", value: "comics", accept: ".cbz,.cbr" },
+  { label: "Comics", value: "comics", accept: ".cbz,.cbr,.jpg,.jpeg,.png,.gif,.webp,.bmp" },
   { label: "Books", value: "books", accept: ".pdf,.epub" },
   { label: "Learning", value: "learning", accept: ".pdf,.epub" },
 ];
@@ -1238,16 +1335,20 @@ function filterByAccept(files) {
 }
 
 // Recursively walk a drag-and-drop directory entry, collecting all files.
-async function readDropEntry(entry, out) {
+// Records each file's relative path in _relpath (parallel to webkitRelativePath
+// from a folder picker) so the server can recover folder structure.
+async function readDropEntry(entry, out, prefix) {
+  const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
   if (entry.isFile) {
     const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    file._relpath = rel;
     out.push(file);
   } else if (entry.isDirectory) {
     const reader = entry.createReader();
     let batch;
     do {
       batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
-      for (const sub of batch) await readDropEntry(sub, out);
+      for (const sub of batch) await readDropEntry(sub, out, rel);
     } while (batch.length);
   }
 }
@@ -1284,6 +1385,8 @@ function uploadWizard() {
   const fd = new FormData();
   fd.append("category", wizCat.value);
   if (wizCat.value === "comics") fd.append("series", els.wizardSeries.value.trim());
+  const paths = wizFiles.map((f) => f._relpath || f.webkitRelativePath || f.name);
+  fd.append("paths", JSON.stringify(paths));
   for (const f of wizFiles) fd.append("files", f);
 
   const xhr = new XMLHttpRequest();
@@ -1375,6 +1478,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (!els.bookmarks.classList.contains("hidden")) {
     if (e.key === "Escape") closeBookmarks();
+    return;
+  }
+  if (!els.stats.classList.contains("hidden")) {
+    if (e.key === "Escape") closeStats();
     return;
   }
   if (!els.details.classList.contains("hidden")) {

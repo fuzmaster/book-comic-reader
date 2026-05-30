@@ -520,3 +520,11 @@ html, body {
   cursor: pointer; font-size: 20px; line-height: 1;
 }
 .bookmark-empty { color: var(--muted); font-size: 14px; text-align: center; padding: 18px 0; }
+
+/* ---------- Reading stats ---------- */
+.stats-title { font-size: 18px; margin: 0 0 16px; }
+.stats-body { font-size: 14px; line-height: 1.7; color: var(--text); }
+.stats-section { font-size: 12px; color: var(--muted); margin: 14px 0 6px; letter-spacing: 0.5px; text-transform: uppercase; }
+.stats-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #ffffff10; }
+.stats-row:last-child { border-bottom: none; }
+.stats-row strong { color: var(--accent); }

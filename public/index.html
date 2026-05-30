@@ -21,6 +21,7 @@
         <h1>My Library</h1>
         <div class="topbar-actions">
           <button id="add-btn" class="ghost-btn">+ Add</button>
+          <button id="stats-btn" class="ghost-btn" title="Reading stats">📊</button>
           <button id="rescan" class="ghost-btn" title="Rescan library">⟳</button>
         </div>
       </div>
@@ -119,6 +120,15 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Reading stats -->
+  <div id="stats" class="modal hidden">
+    <div class="modal-card">
+      <button id="stats-close" class="modal-close" title="Close">×</button>
+      <h2 class="stats-title">Reading stats</h2>
+      <div id="stats-body" class="stats-body">Loading…</div>
     </div>
   </div>
 

@@ -20,6 +20,7 @@ const META_DIR = path.join(__dirname, ".cache", "meta");
 const PDFPAGE_DIR = path.join(__dirname, ".cache", "pdfpages");
 const UPLOAD_TMP = path.join(__dirname, ".cache", "uploads");
 const PROGRESS_FILE = path.join(__dirname, ".cache", "progress.json");
+const STATS_FILE = path.join(__dirname, ".cache", "stats.json");
 const PDF_SCALE = 2.2; // render resolution for PDF pages
 const ICON_DIR = path.join(__dirname, "public", "icons");
 const PORT = process.env.PORT || 4288;
@@ -321,6 +322,21 @@ function writeProgress(store) {
   fs.renameSync(tmp, PROGRESS_FILE); // atomic replace
 }
 
+// ---- Reading stats (pages turned + time spent, by day) ----
+function loadStats() {
+  try { return JSON.parse(fs.readFileSync(STATS_FILE, "utf8")); }
+  catch { return { byDay: {}, totalPages: 0, totalMs: 0 }; }
+}
+function writeStats(s) {
+  fs.mkdirSync(path.dirname(STATS_FILE), { recursive: true });
+  const tmp = STATS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(s));
+  fs.renameSync(tmp, STATS_FILE);
+}
+function dayKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // Look up metadata for a title via the free Open Library API.
 async function fetchOpenLibrary(q) {
   const sig = AbortSignal.timeout(8000); // never hang the request forever
@@ -482,7 +498,48 @@ app.post("/api/upload", upload.array("files", 50), async (req, res) => {
   const files = req.files || [];
   if (!files.length) return res.status(400).json({ error: "no files" });
   const added = [], skipped = [];
+  // Optional client-supplied relative paths (for folder uploads / drag-drop of dirs)
+  let paths = [];
+  try { paths = JSON.parse(req.body.paths || "[]"); } catch {}
+  const relpathOf = (f, i) => (typeof paths[i] === "string" && paths[i]) || f.originalname;
+
   try {
+    // Special path: Comics upload where every file is an image -> bundle into CBZs by top folder.
+    if (category === "comics" && files.length && files.every((f) => IMG_RE.test(f.originalname))) {
+      const groups = new Map();
+      for (let i = 0; i < files.length; i++) {
+        const rel = relpathOf(files[i], i).replace(/^[\\/]+/, "");
+        const segs = rel.split(/[\\/]+/);
+        const volName = segs.length > 1 ? segs[0] : (req.body.volume || safeName(series) || "Volume 1");
+        if (!groups.has(volName)) groups.set(volName, []);
+        groups.get(volName).push({ f: files[i], rel });
+      }
+      const seriesDir = path.join(LIBRARY, safeName(series) || "Comics");
+      fs.mkdirSync(seriesDir, { recursive: true });
+      for (const [volName, items] of groups) {
+        items.sort((a, b) => naturalCompare(a.rel, b.rel));
+        const safeVol = safeName(volName) || "Volume";
+        const outFile = path.join(seriesDir, `${safeVol}.cbz`);
+        await new Promise((resolve, reject) => {
+          const out = fs.createWriteStream(outFile);
+          const arch = archiver("zip", { store: true });
+          out.on("close", resolve);
+          arch.on("error", reject);
+          arch.pipe(out);
+          items.forEach(({ f }, j) => {
+            const ext = path.extname(f.originalname).toLowerCase();
+            arch.append(fs.createReadStream(f.path), { name: `${String(j + 1).padStart(4, "0")}${ext}` });
+          });
+          arch.finalize();
+        });
+        for (const { f } of items) await fsp.unlink(f.path).catch(() => {});
+        added.push(`${safeVol}.cbz`);
+      }
+      catalog = scanAll();
+      return res.json({ ok: true, added, skipped });
+    }
+
+    // Default path: per-file move/convert.
     for (const f of files) {
       const name = path.basename(f.originalname);
       const ext = path.extname(name).toLowerCase();
@@ -512,6 +569,24 @@ app.post("/api/upload", upload.array("files", 50), async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e && e.message ? e.message : e) });
   }
+});
+
+// Reading stats: GET full snapshot, POST to add to today's totals.
+app.get("/api/stats", (req, res) => res.json(loadStats()));
+app.post("/api/stats", (req, res) => {
+  const pages = Math.max(0, Number(req.body.pages) || 0);
+  const ms = Math.max(0, Math.min(120000, Number(req.body.ms) || 0)); // cap any single event at 2 min
+  if (!pages && !ms) return res.json({ ok: true });
+  const s = loadStats();
+  if (!s.byDay) s.byDay = {};
+  const k = dayKey();
+  if (!s.byDay[k]) s.byDay[k] = { pages: 0, ms: 0 };
+  s.byDay[k].pages += pages;
+  s.byDay[k].ms += ms;
+  s.totalPages = (s.totalPages || 0) + pages;
+  s.totalMs = (s.totalMs || 0) + ms;
+  writeStats(s);
+  res.json({ ok: true });
 });
 
 // Reading progress, shared across all your devices.
