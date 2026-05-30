@@ -2,8 +2,8 @@
 // reader works offline. Note: service workers only run in a secure context
 // (https or localhost), so offline caching is active on the desktop and on a
 // phone only if the server is reached over https.
-const SHELL = "comic-shell-v11";
-const MEDIA = "comic-media-v11";
+const SHELL = "comic-shell-v12";
+const MEDIA = "comic-media-v12";
 const SHELL_ASSETS = [
   "./",
   "./index.html",

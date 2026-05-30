@@ -166,6 +166,21 @@ function toggleZoomAt(cx, cy) {
   else zoomAt(2.5, cx, cy);
 }
 
+// ---------- Auth (optional shared-secret token) ----------
+function getReaderToken() { return localStorage.getItem("readerToken") || ""; }
+function getAuthHeader() {
+  const t = getReaderToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+async function authFetch(url, opts = {}) {
+  const r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), ...getAuthHeader() } });
+  if (r.status !== 401) return r;
+  const t = prompt("Reader access token:");
+  if (!t) return r;
+  localStorage.setItem("readerToken", t);
+  return fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } });
+}
+
 // ---------- Progress persistence (synced across devices) ----------
 // In-memory source of truth, hydrated from the server at startup and mirrored
 // to localStorage for offline use.
@@ -181,7 +196,7 @@ function readProgress(id) {
 function persistProgress(id, rec) {
   progressStore[id] = rec;
   try { localStorage.setItem(progressKey(id), JSON.stringify(rec)); } catch {}
-  fetch("/api/progress", {
+  authFetch("/api/progress", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, data: rec }),
@@ -210,7 +225,7 @@ function currentReadingId() {
 }
 function postStats(pages, ms, id) {
   if (!pages && !ms) return;
-  fetch("/api/stats", {
+  authFetch("/api/stats", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pages, ms, id: id || undefined }),
@@ -335,7 +350,7 @@ async function saveCategories() {
   }).filter((c) => c.name && c.dir);
   els.catsMsg.textContent = "Saving…";
   try {
-    const r = await fetch("/api/categories", {
+    const r = await authFetch("/api/categories", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ categories: arr }),
@@ -378,7 +393,7 @@ async function syncProgress() {
     const srv = progressStore[id];
     if (!srv || (local.t || 0) > (srv.t || 0)) {
       progressStore[id] = local;
-      fetch("/api/progress", {
+      authFetch("/api/progress", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, data: local }),
       }).catch(() => {});
@@ -683,7 +698,7 @@ async function bulkDelete() {
   if (!confirm(`Delete ${selectedIds.size} item(s) from disk? This cannot be undone.`)) return;
   const ids = [...selectedIds];
   try {
-    const r = await fetch("/api/delete", {
+    const r = await authFetch("/api/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -1425,7 +1440,7 @@ els.dirToggle.addEventListener("click", toggleDir);
 els.themeToggle.addEventListener("click", cycleTheme);
 els.spreadToggle.addEventListener("click", toggleSpread);
 els.rescan.addEventListener("click", async () => {
-  await fetch("/api/rescan");
+  await authFetch("/api/rescan");
   loadLibrary();
 });
 els.slider.addEventListener("input", (e) => {
@@ -1585,27 +1600,35 @@ function uploadWizard() {
   fd.append("paths", JSON.stringify(paths));
   for (const f of wizFiles) fd.append("files", f);
 
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/upload");
-  els.wizardProgress.classList.remove("hidden");
-  els.wizardUpload.disabled = true;
-  els.wizardMsg.textContent = "Uploading…";
-  xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) els.wizardBar.style.width = Math.round((e.loaded / e.total) * 100) + "%";
+  const send = (token) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload");
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    els.wizardProgress.classList.remove("hidden");
+    els.wizardUpload.disabled = true;
+    els.wizardMsg.textContent = "Uploading…";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) els.wizardBar.style.width = Math.round((e.loaded / e.total) * 100) + "%";
+    };
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        els.wizardMsg.textContent = "Added! Refreshing…";
+        setTimeout(() => { closeWizard(); loadLibrary(); }, 700);
+      } else if (xhr.status === 401) {
+        const t = prompt("Reader access token:");
+        if (t) { localStorage.setItem("readerToken", t); send(t); }
+        else { els.wizardMsg.textContent = "Access token required."; els.wizardUpload.disabled = false; }
+      } else {
+        let msg = "Upload failed";
+        try { msg = JSON.parse(xhr.responseText).error || msg; } catch {}
+        els.wizardMsg.textContent = msg;
+        els.wizardUpload.disabled = false;
+      }
+    };
+    xhr.onerror = () => { els.wizardMsg.textContent = "Upload failed (network)"; els.wizardUpload.disabled = false; };
+    xhr.send(fd);
   };
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      els.wizardMsg.textContent = "Added! Refreshing…";
-      setTimeout(() => { closeWizard(); loadLibrary(); }, 700);
-    } else {
-      let msg = "Upload failed";
-      try { msg = JSON.parse(xhr.responseText).error || msg; } catch {}
-      els.wizardMsg.textContent = msg;
-      els.wizardUpload.disabled = false;
-    }
-  };
-  xhr.onerror = () => { els.wizardMsg.textContent = "Upload failed (network)"; els.wizardUpload.disabled = false; };
-  xhr.send(fd);
+  send(getReaderToken());
 }
 
 els.wizardClose.addEventListener("click", closeWizard);

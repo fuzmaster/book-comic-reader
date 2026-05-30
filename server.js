@@ -25,6 +25,8 @@ const CATEGORIES_FILE = path.join(__dirname, ".cache", "categories.json");
 const PDF_SCALE = 2.2; // render resolution for PDF pages
 const ICON_DIR = path.join(__dirname, "public", "icons");
 const PORT = process.env.PORT || 4288;
+const HOST = process.env.HOST || "0.0.0.0"; // set HOST=127.0.0.1 for localhost-only
+const READER_TOKEN = process.env.READER_TOKEN || ""; // if set, required on write endpoints
 const THUMB_WIDTH = 360;
 
 // Document categories read in place (not converted). Folder -> display name.
@@ -476,6 +478,13 @@ async function ensureIcons() {
 }
 ensureIcons().catch((e) => console.error("icon generation failed:", e.message));
 
+// First-run: make sure the expected directories exist so a fresh clone
+// has the right structure ready for uploads and conversion.
+fs.mkdirSync(FILES, { recursive: true });
+fs.mkdirSync(LIBRARY, { recursive: true });
+for (const c of DOC_CATEGORIES) fs.mkdirSync(path.join(FILES, c.dir), { recursive: true });
+fs.mkdirSync(path.join(FILES, "comics"), { recursive: true });
+
 let catalog = scanAll();
 
 // Watch the library/source folders and rescan automatically (debounced).
@@ -491,6 +500,40 @@ for (const dir of [FILES, LIBRARY]) {
 }
 
 const app = express();
+
+// Minimal security headers — defense in depth even on a private LAN.
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
+// Gate for write endpoints when a shared-secret token is configured.
+function requireToken(req, res, next) {
+  if (!READER_TOKEN) return next(); // auth disabled — fine for personal LAN use
+  const h = req.headers.authorization || "";
+  if (h === `Bearer ${READER_TOKEN}`) return next();
+  return res.status(401).json({ error: "access token required" });
+}
+
+// Per-IP token bucket for the Open Library proxy so we can't be turned into
+// an amplification vector against their public API.
+const metaBuckets = new Map();
+function metaLimit(req, res, next) {
+  const ip = req.ip || req.socket.remoteAddress || "?";
+  const now = Date.now();
+  let b = metaBuckets.get(ip);
+  if (!b) { b = { tokens: 60, last: now }; metaBuckets.set(ip, b); }
+  const refill = ((now - b.last) / 60000) * 60; // 60 per minute
+  b.tokens = Math.min(60, b.tokens + refill);
+  b.last = now;
+  if (b.tokens < 1) return res.status(429).json({ error: "too many requests" });
+  b.tokens -= 1;
+  next();
+}
+
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 // Vendored reader libraries (EPUB rendering).
@@ -499,13 +542,13 @@ app.use("/vendor/jszip", express.static(path.join(__dirname, "node_modules", "js
 
 app.get("/api/library", (req, res) => res.json(catalog));
 
-app.get("/api/rescan", (req, res) => {
+app.get("/api/rescan", requireToken, (req, res) => {
   catalog = scanAll();
   res.json(catalog);
 });
 
 // Bulk delete: removes underlying files (comics CBZ or doc PDF/EPUB) by id.
-app.post("/api/delete", async (req, res) => {
+app.post("/api/delete", requireToken, async (req, res) => {
   const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
   const removed = [], failed = [];
   for (const id of ids) {
@@ -535,7 +578,7 @@ app.post("/api/delete", async (req, res) => {
 
 // Document categories: GET reads, POST replaces (and creates any new folders).
 app.get("/api/categories", (req, res) => res.json(DOC_CATEGORIES));
-app.post("/api/categories", (req, res) => {
+app.post("/api/categories", requireToken, (req, res) => {
   const arr = req.body && req.body.categories;
   if (!Array.isArray(arr)) return res.status(400).json({ error: "categories[] required" });
   const clean = [];
@@ -557,8 +600,8 @@ app.post("/api/categories", (req, res) => {
 
 // Upload new content. category: comics | books | learning. series: comics only.
 fs.mkdirSync(UPLOAD_TMP, { recursive: true });
-const upload = multer({ dest: UPLOAD_TMP, limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
-app.post("/api/upload", upload.array("files", 50), async (req, res) => {
+const upload = multer({ dest: UPLOAD_TMP, limits: { fileSize: 1024 * 1024 * 1024 } }); // 1 GB per file
+app.post("/api/upload", requireToken, upload.array("files", 50), async (req, res) => {
   const category = (req.body.category || "").toLowerCase();
   const series = (req.body.series || "").trim();
   const files = req.files || [];
@@ -633,13 +676,15 @@ app.post("/api/upload", upload.array("files", 50), async (req, res) => {
     catalog = scanAll();
     res.json({ ok: true, added, skipped });
   } catch (e) {
-    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+    // Log details server-side but don't echo paths/exception text to clients.
+    console.error("upload failed:", e && e.message ? e.message : e);
+    res.status(500).json({ error: "upload failed" });
   }
 });
 
 // Reading stats: GET full snapshot, POST to add to today's totals.
 app.get("/api/stats", (req, res) => res.json(loadStats()));
-app.post("/api/stats", (req, res) => {
+app.post("/api/stats", requireToken, (req, res) => {
   const pages = Math.max(0, Number(req.body.pages) || 0);
   const ms = Math.max(0, Math.min(120000, Number(req.body.ms) || 0)); // cap any single event at 2 min
   const id = typeof req.body.id === "string" ? req.body.id : null;
@@ -665,7 +710,7 @@ app.post("/api/stats", (req, res) => {
 // Reading progress, shared across all your devices.
 app.get("/api/progress", (req, res) => res.json(loadProgress()));
 
-app.post("/api/progress", (req, res) => {
+app.post("/api/progress", requireToken, (req, res) => {
   const { id, data } = req.body || {};
   if (!id || typeof data !== "object") return res.status(400).json({ error: "bad request" });
   const store = loadProgress();
@@ -676,7 +721,7 @@ app.post("/api/progress", (req, res) => {
 });
 
 // Metadata lookup for an item (q = search title, supplied by the client).
-app.get("/api/meta/:id", async (req, res) => {
+app.get("/api/meta/:id", metaLimit, async (req, res) => {
   const q = (req.query.q || "").toString().trim();
   if (!q) return res.status(400).json({ found: false, error: "missing q" });
   try {
@@ -770,7 +815,7 @@ app.get("/api/book/:id/page/:n", async (req, res) => {
   }
 });
 
-const httpServer = app.listen(PORT, "0.0.0.0", () => {
+const httpServer = app.listen(PORT, HOST, () => {
   const nets = os.networkInterfaces();
   const lan = [];
   for (const name of Object.keys(nets)) {

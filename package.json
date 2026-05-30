@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Convert and read comic books on desktop or phone",
+  "description": "Self-hosted reader for comics, manga, PDFs and EPUB — runs on your PC, reachable from your phone",
+  "engines": { "node": ">=18" },
   "scripts": {
     "convert": "node convert.js",
     "start": "node server.js"
