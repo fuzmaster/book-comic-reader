@@ -25,9 +25,27 @@
         </div>
       </div>
       <input id="search" class="search-input" type="search" placeholder="Search titles…" />
-      <div id="filter-chips" class="chips"></div>
+      <div class="topbar-bottom">
+        <div id="filter-chips" class="chips"></div>
+        <select id="sort-select" class="sort-select" title="Sort">
+          <option value="default">Default</option>
+          <option value="recent">Recently opened</option>
+          <option value="az">A → Z</option>
+        </select>
+      </div>
     </header>
     <div id="shelves"></div>
+  </div>
+
+  <!-- Series detail -->
+  <div id="series-view" class="view hidden">
+    <header class="topbar">
+      <div class="topbar-row">
+        <button id="series-back" class="ghost-btn">‹ Library</button>
+        <h1 id="series-name" style="font-size:20px;margin:0;flex:1;text-align:right;"></h1>
+      </div>
+    </header>
+    <div id="series-grid" class="series-grid"></div>
   </div>
 
   <!-- Reader -->
@@ -135,8 +153,12 @@
         <div class="wizard-label">Files</div>
         <label id="wizard-drop" class="wizard-drop">
           <input id="wizard-files" type="file" multiple hidden />
-          <span id="wizard-drop-text">Tap to choose files, or drop them here</span>
+          <span id="wizard-drop-text">Tap to choose files, or drop files/folders here</span>
         </label>
+        <input id="wizard-folder" type="file" webkitdirectory hidden />
+        <div style="margin-top:8px; text-align:center;">
+          <button type="button" id="wizard-folder-btn" class="ghost-btn">📁 Choose folder…</button>
+        </div>
         <div id="wizard-list" class="wizard-list"></div>
       </div>
 

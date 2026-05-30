@@ -63,6 +63,18 @@ html, body {
 }
 .chip.active { background: var(--accent); color: #08111f; border-color: transparent; font-weight: 600; }
 
+.topbar-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.topbar-bottom .chips { flex: 1; }
+.sort-select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid #ffffff14;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
 .ghost-btn {
   background: var(--panel-2);
   color: var(--text);
@@ -75,6 +87,10 @@ html, body {
 .ghost-btn:active { background: #2c3540; }
 
 #shelves { padding: 8px 16px 40px; }
+.series-grid { padding: 16px 16px 40px; }
+.series-grid .row { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.shelf-link { cursor: pointer; transition: color 0.15s; }
+.shelf-link:hover { color: var(--text); }
 
 .category-title {
   font-size: 22px;

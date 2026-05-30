@@ -4,7 +4,12 @@ const els = {
   rescan: document.getElementById("rescan"),
   search: document.getElementById("search"),
   filterChips: document.getElementById("filter-chips"),
+  sortSelect: document.getElementById("sort-select"),
   addBtn: document.getElementById("add-btn"),
+  seriesView: document.getElementById("series-view"),
+  seriesBack: document.getElementById("series-back"),
+  seriesName: document.getElementById("series-name"),
+  seriesGrid: document.getElementById("series-grid"),
   // Wizard
   wizard: document.getElementById("wizard"),
   wizardClose: document.getElementById("wizard-close"),
@@ -15,6 +20,8 @@ const els = {
   wizardDrop: document.getElementById("wizard-drop"),
   wizardDropText: document.getElementById("wizard-drop-text"),
   wizardFiles: document.getElementById("wizard-files"),
+  wizardFolder: document.getElementById("wizard-folder"),
+  wizardFolderBtn: document.getElementById("wizard-folder-btn"),
   wizardList: document.getElementById("wizard-list"),
   wizardUpload: document.getElementById("wizard-upload"),
   wizardMsg: document.getElementById("wizard-msg"),
@@ -198,7 +205,25 @@ async function syncProgress() {
 // ---------- Library ----------
 let searchText = "";       // lowercase title filter
 let activeCategory = null; // null = all
+let sortBy = localStorage.getItem("sortBy") || "default"; // default | recent | az
 let lastSig = "";          // catalog signature for live-refresh
+
+// Sort items inside a shelf per the current selection.
+function sortItems(items) {
+  if (sortBy === "az") {
+    return items.slice().sort((a, b) =>
+      a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" })
+    );
+  }
+  if (sortBy === "recent") {
+    return items.slice().sort((a, b) => {
+      const ta = (readProgress(a.id) || {}).t || 0;
+      const tb = (readProgress(b.id) || {}).t || 0;
+      return tb - ta; // most recent first
+    });
+  }
+  return items; // default = server order
+}
 
 function catalogSig(c) {
   return JSON.stringify((c.categories || []).map((x) => [x.name, x.shelves.flatMap((s) => s.items.map((i) => i.id))]));
@@ -325,7 +350,7 @@ function renderLibrary() {
   for (const cat of catalog.categories) {
     if (activeCategory !== null && cat.name !== activeCategory) continue;
     const shelves = cat.shelves
-      .map((s) => ({ title: s.title, items: unfinishedItems(s.items.filter(matchesSearch)) }))
+      .map((s) => ({ title: s.title, items: sortItems(unfinishedItems(s.items.filter(matchesSearch))) }))
       .filter((s) => s.items.length);
     if (!shelves.length) continue;
 
@@ -339,7 +364,10 @@ function renderLibrary() {
       if (shelf.title) {
         const sub = document.createElement("h3");
         sub.style.cssText = "font-size:15px;margin:14px 4px 10px;color:var(--muted);";
-        sub.textContent = shelf.title;
+        sub.textContent = shelf.title + " →";
+        sub.className = "shelf-link";
+        const seriesName = shelf.title;
+        sub.addEventListener("click", () => openSeries(seriesName));
         sec.appendChild(sub);
       }
       sec.appendChild(shelfRow(shelf.items));
@@ -571,6 +599,30 @@ function toggleFinished() {
   refreshFinishButton();
   renderLibrary(); // moves the item between Continue Reading / categories / Finished
   showToast(prev.finished ? "Marked as unfinished" : "Marked as finished");
+}
+
+// ---------- Series detail page ----------
+let currentSeries = null;
+function openSeries(name) {
+  if (currentSeries === name && !els.seriesView.classList.contains("hidden")) return;
+  const comics = catalog.categories.find((c) => c.name === "Comics");
+  const shelf = comics && comics.shelves.find((s) => s.title === name);
+  if (!shelf) return;
+  currentSeries = name;
+  els.seriesName.textContent = name;
+  els.seriesGrid.innerHTML = "";
+  els.seriesGrid.appendChild(shelfRow(sortItems(shelf.items)));
+  els.library.classList.add("hidden");
+  els.seriesView.classList.remove("hidden");
+  if (!location.hash.startsWith("#series/")) location.hash = `series/${encodeURIComponent(name)}`;
+}
+function closeSeries() {
+  if (els.seriesView.classList.contains("hidden")) return;
+  els.seriesView.classList.add("hidden");
+  els.library.classList.remove("hidden");
+  currentSeries = null;
+  if (location.hash.startsWith("#series/")) location.hash = "";
+  renderLibrary(); // refresh progress bars
 }
 
 // Route an item to the right reader.
@@ -1107,6 +1159,17 @@ els.slider.addEventListener("input", (e) => {
 
 // Search + add
 els.search.addEventListener("input", (e) => { searchText = e.target.value.trim().toLowerCase(); renderLibrary(); });
+els.sortSelect.value = sortBy;
+els.sortSelect.addEventListener("change", (e) => {
+  sortBy = e.target.value;
+  localStorage.setItem("sortBy", sortBy);
+  renderLibrary();
+  // also re-render series detail if open
+  if (!els.seriesView.classList.contains("hidden") && currentSeries) {
+    const name = currentSeries; currentSeries = null; openSeries(name);
+  }
+});
+els.seriesBack.addEventListener("click", closeSeries);
 els.addBtn.addEventListener("click", openWizard);
 
 // ---------- Add-content wizard ----------
@@ -1125,8 +1188,9 @@ function openWizard() {
   els.wizardSeries.value = "";
   els.wizardList.innerHTML = "";
   els.wizardFiles.value = "";
+  els.wizardFolder.value = "";
   els.wizardFiles.removeAttribute("accept");
-  els.wizardDropText.textContent = "Tap to choose files, or drop them here";
+  els.wizardDropText.textContent = "Tap to choose files, or drop files/folders here";
   els.wizardMsg.textContent = "";
   els.wizardProgress.classList.add("hidden");
   els.wizardBar.style.width = "0%";
@@ -1157,11 +1221,40 @@ function selectWizCat(c, chip) {
   [...els.wizardCats.children].forEach((x) => x.classList.toggle("active", x === chip));
   els.wizardSeriesWrap.classList.toggle("hidden", c.value !== "comics");
   els.wizardFiles.setAttribute("accept", c.accept);
+  // Forget any previously selected files — new accept filter may not match them.
+  wizFiles = [];
+  els.wizardList.innerHTML = "";
+  els.wizardFiles.value = "";
+  els.wizardFolder.value = "";
+  els.wizardDropText.textContent = "Tap to choose files, or drop files/folders here";
   updateWizardUpload();
 }
 
+// Keep only files matching the chosen category's accept extensions.
+function filterByAccept(files) {
+  if (!wizCat) return [...files];
+  const exts = wizCat.accept.split(",").map((s) => s.trim().toLowerCase());
+  return [...files].filter((f) => exts.some((ext) => f.name.toLowerCase().endsWith(ext)));
+}
+
+// Recursively walk a drag-and-drop directory entry, collecting all files.
+async function readDropEntry(entry, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push(file);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    let batch;
+    do {
+      batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      for (const sub of batch) await readDropEntry(sub, out);
+    } while (batch.length);
+  }
+}
+
 function setWizFiles(list) {
-  wizFiles = [...list];
+  wizFiles = filterByAccept(list);
+  const total = list.length || 0;
   els.wizardList.innerHTML = "";
   for (const f of wizFiles) {
     const row = document.createElement("div");
@@ -1174,9 +1267,10 @@ function setWizFiles(list) {
     row.append(n, sz);
     els.wizardList.appendChild(row);
   }
+  const skippedNote = (total && total > wizFiles.length) ? ` (${total - wizFiles.length} skipped)` : "";
   els.wizardDropText.textContent = wizFiles.length
-    ? `${wizFiles.length} file(s) selected`
-    : "Tap to choose files, or drop them here";
+    ? `${wizFiles.length} file(s) selected${skippedNote}`
+    : (total ? `0 of ${total} files match this category` : "Tap to choose files, or drop files/folders here");
   updateWizardUpload();
 }
 
@@ -1218,11 +1312,23 @@ function uploadWizard() {
 els.wizardClose.addEventListener("click", closeWizard);
 els.wizard.addEventListener("click", (e) => { if (e.target === els.wizard) closeWizard(); });
 els.wizardFiles.addEventListener("change", (e) => setWizFiles(e.target.files));
+els.wizardFolder.addEventListener("change", (e) => setWizFiles(e.target.files));
+els.wizardFolderBtn.addEventListener("click", () => els.wizardFolder.click());
+
 els.wizardDrop.addEventListener("dragover", (e) => { e.preventDefault(); els.wizardDrop.classList.add("dragover"); });
 els.wizardDrop.addEventListener("dragleave", () => els.wizardDrop.classList.remove("dragover"));
-els.wizardDrop.addEventListener("drop", (e) => {
+els.wizardDrop.addEventListener("drop", async (e) => {
   e.preventDefault();
   els.wizardDrop.classList.remove("dragover");
+  const items = e.dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const collected = [];
+    const entries = [...items].map((it) => it.webkitGetAsEntry()).filter(Boolean);
+    try {
+      await Promise.all(entries.map((en) => readDropEntry(en, collected)));
+    } catch {}
+    if (collected.length) { setWizFiles(collected); return; }
+  }
   if (e.dataTransfer.files.length) setWizFiles(e.dataTransfer.files);
 });
 els.wizardUpload.addEventListener("click", uploadWizard);
@@ -1275,6 +1381,10 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeDetails();
     return;
   }
+  if (!els.seriesView.classList.contains("hidden")) {
+    if (e.key === "Escape") closeSeries();
+    return;
+  }
   if (state.view === "epub") {
     if (e.key === "ArrowLeft") epubRendition && epubRendition.prev();
     else if (e.key === "ArrowRight") epubRendition && epubRendition.next();
@@ -1300,6 +1410,11 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("hashchange", () => {
+  if (location.hash.startsWith("#series/")) {
+    openSeries(decodeURIComponent(location.hash.slice("#series/".length)));
+    return;
+  }
+  if (!els.seriesView.classList.contains("hidden")) { closeSeries(); return; }
   const inViewer = /^#(read|pdf|epub)\//.test(location.hash);
   if (!inViewer && state.view !== "library") leaveViewer();
 });
