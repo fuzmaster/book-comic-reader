@@ -21,7 +21,9 @@
         <h1>My Library</h1>
         <div class="topbar-actions">
           <button id="add-btn" class="ghost-btn">+ Add</button>
+          <button id="select-btn" class="ghost-btn" title="Select multiple">✓</button>
           <button id="stats-btn" class="ghost-btn" title="Reading stats">📊</button>
+          <button id="settings-btn" class="ghost-btn" title="Settings">⚙</button>
           <button id="rescan" class="ghost-btn" title="Rescan library">⟳</button>
         </div>
       </div>
@@ -36,6 +38,15 @@
       </div>
     </header>
     <div id="shelves"></div>
+    <div id="bulk-bar" class="bulk-bar hidden">
+      <span id="bulk-count">0 selected</span>
+      <div class="bulk-actions">
+        <button id="bulk-finished" class="ghost-btn">✓ Finished</button>
+        <button id="bulk-unfinished" class="ghost-btn">↺ Unfinished</button>
+        <button id="bulk-delete" class="ghost-btn bulk-delete">🗑 Delete</button>
+        <button id="bulk-cancel" class="ghost-btn">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <!-- Series detail -->
@@ -123,12 +134,32 @@
     </div>
   </div>
 
+  <!-- Settings -->
+  <div id="settings" class="modal hidden">
+    <div class="modal-card">
+      <button id="settings-close" class="modal-close" title="Close">×</button>
+      <h2 class="stats-title">Settings · Categories</h2>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">Document categories (Comics is built-in). Folder names go under <code>files/</code>.</p>
+      <ul id="cats-list" class="cats-list"></ul>
+      <button id="cats-add" class="ghost-btn">+ Add category</button>
+      <div class="wizard-actions">
+        <span id="cats-msg" class="wizard-msg"></span>
+        <button id="cats-save" class="primary-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Reading stats -->
   <div id="stats" class="modal hidden">
     <div class="modal-card">
       <button id="stats-close" class="modal-close" title="Close">×</button>
       <h2 class="stats-title">Reading stats</h2>
       <div id="stats-body" class="stats-body">Loading…</div>
+      <div class="stats-actions">
+        <button id="export-stats-csv" class="ghost-btn">Stats CSV</button>
+        <button id="export-stats-json" class="ghost-btn">Stats JSON</button>
+        <button id="export-finished" class="ghost-btn">Finished CSV</button>
+      </div>
     </div>
   </div>
 

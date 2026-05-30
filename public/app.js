@@ -6,10 +6,28 @@ const els = {
   filterChips: document.getElementById("filter-chips"),
   sortSelect: document.getElementById("sort-select"),
   addBtn: document.getElementById("add-btn"),
+  selectBtn: document.getElementById("select-btn"),
+  bulkBar: document.getElementById("bulk-bar"),
+  bulkCount: document.getElementById("bulk-count"),
+  bulkFinished: document.getElementById("bulk-finished"),
+  bulkUnfinished: document.getElementById("bulk-unfinished"),
+  bulkDelete: document.getElementById("bulk-delete"),
+  bulkCancel: document.getElementById("bulk-cancel"),
   statsBtn: document.getElementById("stats-btn"),
   stats: document.getElementById("stats"),
   statsClose: document.getElementById("stats-close"),
   statsBody: document.getElementById("stats-body"),
+  exportStatsCsv: document.getElementById("export-stats-csv"),
+  exportStatsJson: document.getElementById("export-stats-json"),
+  exportFinished: document.getElementById("export-finished"),
+  // Settings
+  settingsBtn: document.getElementById("settings-btn"),
+  settings: document.getElementById("settings"),
+  settingsClose: document.getElementById("settings-close"),
+  catsList: document.getElementById("cats-list"),
+  catsAdd: document.getElementById("cats-add"),
+  catsSave: document.getElementById("cats-save"),
+  catsMsg: document.getElementById("cats-msg"),
   seriesView: document.getElementById("series-view"),
   seriesBack: document.getElementById("series-back"),
   seriesName: document.getElementById("series-name"),
@@ -183,24 +201,32 @@ function saveDocProgress(id, extra) {
 
 // ---------- Reading stats tracking ----------
 let pageStartTime = 0;
-function postStats(pages, ms) {
+let currentReadId = null;   // id of the item that owns the current dwell time
+
+function currentReadingId() {
+  if (state.src) return state.src.id;
+  if (state.view === "epub" && state.doc) return state.doc.id;
+  return null;
+}
+function postStats(pages, ms, id) {
   if (!pages && !ms) return;
   fetch("/api/stats", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pages, ms }),
+    body: JSON.stringify({ pages, ms, id: id || undefined }),
   }).catch(() => {});
 }
 function recordPageTurn() {
   if (!pageStartTime) return; // first page of a session: no prior dwell to record
   const dt = Math.min(60000, Math.max(0, Date.now() - pageStartTime));
-  postStats(1, dt);
+  postStats(1, dt, currentReadId);
 }
 function flushReadingSession() {
   if (!pageStartTime) return;
   const dt = Math.min(60000, Math.max(0, Date.now() - pageStartTime));
-  postStats(0, dt);
+  postStats(0, dt, currentReadId);
   pageStartTime = 0;
+  currentReadId = null;
 }
 
 function fmtTime(ms) {
@@ -226,6 +252,18 @@ async function openStats() {
     const r = s.byDay && s.byDay[localDayKey(d)];
     if (r) { weekP += r.pages || 0; weekMs += r.ms || 0; }
   }
+  // Top reads — lookup titles from the catalog
+  const titles = new Map();
+  for (const it of allItems()) titles.set(it.id, it.title);
+  const top = Object.entries(s.byItem || {})
+    .map(([id, v]) => ({ id, title: titles.get(id), pages: v.pages, ms: v.ms }))
+    .filter((x) => x.title) // skip orphaned ids
+    .sort((a, b) => b.ms - a.ms)
+    .slice(0, 5);
+  const topHtml = top.length
+    ? top.map((t) => `<div class="stats-row"><span class="ellipsis">${t.title}</span><strong>${fmtTime(t.ms)}</strong></div>`).join("")
+    : '<div class="stats-row" style="color:var(--muted)"><span>Nothing tracked yet.</span></div>';
+
   els.statsBody.innerHTML = `
     <div class="stats-section">Today</div>
     <div class="stats-row"><span>Pages read</span><strong>${today.pages}</strong></div>
@@ -236,9 +274,95 @@ async function openStats() {
     <div class="stats-section">All-time</div>
     <div class="stats-row"><span>Pages read</span><strong>${s.totalPages || 0}</strong></div>
     <div class="stats-row"><span>Time spent</span><strong>${fmtTime(s.totalMs)}</strong></div>
+    <div class="stats-section">Top reads</div>
+    ${topHtml}
   `;
 }
 function closeStats() { els.stats.classList.add("hidden"); }
+
+// ---------- Exports ----------
+function downloadBlob(filename, type, content) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const csvEscape = (s) => /[",\n]/.test(s) ? `"${String(s).replace(/"/g, '""')}"` : String(s);
+async function exportStatsCsv() {
+  const s = await fetch("/api/stats").then((r) => r.json());
+  const lines = ["date,pages,minutes"];
+  for (const d of Object.keys(s.byDay || {}).sort()) {
+    const row = s.byDay[d] || {};
+    lines.push(`${d},${row.pages || 0},${Math.round((row.ms || 0) / 60000)}`);
+  }
+  downloadBlob("reading-stats.csv", "text/csv", lines.join("\n"));
+}
+async function exportStatsJson() {
+  const s = await fetch("/api/stats").then((r) => r.json());
+  downloadBlob("reading-stats.json", "application/json", JSON.stringify(s, null, 2));
+}
+// ---------- Settings: categories ----------
+function addCatRow(name = "", dir = "") {
+  const li = document.createElement("li");
+  li.className = "cat-row";
+  const n = document.createElement("input"); n.placeholder = "Display name"; n.value = name; n.dataset.field = "name";
+  const d = document.createElement("input"); d.placeholder = "folder"; d.value = dir; d.dataset.field = "dir";
+  const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "×"; rm.title = "Remove";
+  rm.addEventListener("click", () => li.remove());
+  li.append(n, d, rm);
+  els.catsList.appendChild(li);
+}
+async function openSettings() {
+  els.catsMsg.textContent = "";
+  els.catsList.innerHTML = "";
+  let cats = [];
+  try { cats = await fetch("/api/categories").then((r) => r.json()); } catch {}
+  if (!cats.length) cats = [{ name: "Books", dir: "books" }, { name: "Learning", dir: "learning" }];
+  for (const c of cats) addCatRow(c.name, c.dir);
+  els.settings.classList.remove("hidden");
+}
+function closeSettings() { els.settings.classList.add("hidden"); }
+async function saveCategories() {
+  const rows = [...els.catsList.querySelectorAll(".cat-row")];
+  const arr = rows.map((r) => {
+    const ins = [...r.querySelectorAll("input")];
+    return { name: ins[0].value.trim(), dir: ins[1].value.trim() };
+  }).filter((c) => c.name && c.dir);
+  els.catsMsg.textContent = "Saving…";
+  try {
+    const r = await fetch("/api/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categories: arr }),
+    });
+    if (!r.ok) throw new Error("save failed");
+    els.catsMsg.textContent = "Saved.";
+    setTimeout(() => { closeSettings(); loadLibrary(); }, 500);
+  } catch {
+    els.catsMsg.textContent = "Couldn't save.";
+  }
+}
+
+function exportFinishedCsv() {
+  const rows = [["title", "category", "finished_at"]];
+  for (const cat of catalog.categories) {
+    for (const shelf of cat.shelves) {
+      for (const it of shelf.items) {
+        const p = readProgress(it.id);
+        if (p && p.finished) {
+          rows.push([it.title, cat.name, new Date(p.t || 0).toISOString()]);
+        }
+      }
+    }
+  }
+  const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
+  downloadBlob("finished.csv", "text/csv", csv);
+}
 
 // Merge server progress with local progress (newest timestamp wins) at startup.
 async function syncProgress() {
@@ -513,8 +637,64 @@ function makeCard(item) {
   info.addEventListener("click", (e) => { e.stopPropagation(); openDetails(item); });
   card.appendChild(info);
 
-  card.addEventListener("click", () => openItem(item));
+  card.dataset.id = item.id;
+  if (selectionMode && selectedIds.has(item.id)) card.classList.add("selected");
+  card.addEventListener("click", (e) => {
+    if (selectionMode) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSelect(item.id);
+      card.classList.toggle("selected", selectedIds.has(item.id));
+      return;
+    }
+    openItem(item);
+  });
   return card;
+}
+
+// ---------- Bulk selection ----------
+let selectionMode = false;
+const selectedIds = new Set();
+function refreshBulkBar() {
+  els.bulkCount.textContent = `${selectedIds.size} selected`;
+  els.bulkBar.classList.toggle("hidden", !selectionMode);
+  els.library.classList.toggle("library-select-mode", selectionMode);
+  els.selectBtn.classList.toggle("active", selectionMode);
+}
+function toggleSelect(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id);
+  else selectedIds.add(id);
+  refreshBulkBar();
+}
+function enterSelectMode() { selectionMode = true; selectedIds.clear(); refreshBulkBar(); }
+function exitSelectMode() { selectionMode = false; selectedIds.clear(); refreshBulkBar(); }
+
+function bulkSetFinished(value) {
+  for (const id of selectedIds) {
+    const prev = readProgress(id) || {};
+    persistProgress(id, { ...prev, finished: !!value, t: Date.now() });
+  }
+  showToast(`${selectedIds.size} item(s) ${value ? "marked finished" : "marked unfinished"}`);
+  exitSelectMode();
+  renderLibrary();
+}
+async function bulkDelete() {
+  if (!selectedIds.size) return;
+  if (!confirm(`Delete ${selectedIds.size} item(s) from disk? This cannot be undone.`)) return;
+  const ids = [...selectedIds];
+  try {
+    const r = await fetch("/api/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    const j = await r.json();
+    showToast(`Deleted ${j.removed ? j.removed.length : 0} item(s)`);
+  } catch {
+    showToast("Delete failed");
+  }
+  exitSelectMode();
+  await loadLibrary();
 }
 
 // ---------- Details / metadata ----------
@@ -760,6 +940,7 @@ function showPage(i) {
   if (state.index !== i) recordPageTurn(); // count the time we spent on the previous page
   state.index = i;
   pageStartTime = Date.now();
+  currentReadId = currentReadingId();
   if (state.spread) {
     els.pageLeft.src = pageUrl(i);
     const hasRight = i + 1 < state.pageCount;
@@ -889,6 +1070,7 @@ async function openEpub(item) {
   epubRendition.on("relocated", (loc) => {
     recordPageTurn();
     pageStartTime = Date.now();
+    currentReadId = currentReadingId();
     saveDocProgress(item.id, {
       cfi: loc.start.cfi,
       percent: epubBook.locations.length() ? epubBook.locations.percentageFromCfi(loc.start.cfi) : 0,
@@ -1265,20 +1447,28 @@ els.sortSelect.addEventListener("change", (e) => {
 });
 els.seriesBack.addEventListener("click", closeSeries);
 els.addBtn.addEventListener("click", openWizard);
+els.selectBtn.addEventListener("click", () => (selectionMode ? exitSelectMode() : enterSelectMode()));
+els.bulkFinished.addEventListener("click", () => bulkSetFinished(true));
+els.bulkUnfinished.addEventListener("click", () => bulkSetFinished(false));
+els.bulkDelete.addEventListener("click", bulkDelete);
+els.bulkCancel.addEventListener("click", exitSelectMode);
 els.statsBtn.addEventListener("click", openStats);
 els.statsClose.addEventListener("click", closeStats);
 els.stats.addEventListener("click", (e) => { if (e.target === els.stats) closeStats(); });
+els.settingsBtn.addEventListener("click", openSettings);
+els.settingsClose.addEventListener("click", closeSettings);
+els.settings.addEventListener("click", (e) => { if (e.target === els.settings) closeSettings(); });
+els.catsAdd.addEventListener("click", () => addCatRow());
+els.catsSave.addEventListener("click", saveCategories);
+els.exportStatsCsv.addEventListener("click", exportStatsCsv);
+els.exportStatsJson.addEventListener("click", exportStatsJson);
+els.exportFinished.addEventListener("click", exportFinishedCsv);
 
 // ---------- Add-content wizard ----------
-const WIZ_CATS = [
-  { label: "Comics", value: "comics", accept: ".cbz,.cbr,.jpg,.jpeg,.png,.gif,.webp,.bmp" },
-  { label: "Books", value: "books", accept: ".pdf,.epub" },
-  { label: "Learning", value: "learning", accept: ".pdf,.epub" },
-];
 let wizCat = null;
 let wizFiles = [];
 
-function openWizard() {
+async function openWizard() {
   wizCat = null;
   wizFiles = [];
   els.wizardSeriesWrap.classList.add("hidden");
@@ -1293,7 +1483,13 @@ function openWizard() {
   els.wizardBar.style.width = "0%";
 
   els.wizardCats.innerHTML = "";
-  for (const c of WIZ_CATS) {
+  let docCats = [];
+  try { docCats = await fetch("/api/categories").then((r) => r.json()); } catch {}
+  const wizCats = [
+    { label: "Comics", value: "comics", accept: ".cbz,.cbr,.jpg,.jpeg,.png,.gif,.webp,.bmp" },
+    ...docCats.map((c) => ({ label: c.name, value: c.dir, accept: ".pdf,.epub" })),
+  ];
+  for (const c of wizCats) {
     const chip = document.createElement("button");
     chip.className = "chip";
     chip.textContent = c.label;
@@ -1482,6 +1678,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (!els.stats.classList.contains("hidden")) {
     if (e.key === "Escape") closeStats();
+    return;
+  }
+  if (!els.settings.classList.contains("hidden")) {
+    if (e.key === "Escape") closeSettings();
     return;
   }
   if (!els.details.classList.contains("hidden")) {

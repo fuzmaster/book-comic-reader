@@ -21,16 +21,31 @@ const PDFPAGE_DIR = path.join(__dirname, ".cache", "pdfpages");
 const UPLOAD_TMP = path.join(__dirname, ".cache", "uploads");
 const PROGRESS_FILE = path.join(__dirname, ".cache", "progress.json");
 const STATS_FILE = path.join(__dirname, ".cache", "stats.json");
+const CATEGORIES_FILE = path.join(__dirname, ".cache", "categories.json");
 const PDF_SCALE = 2.2; // render resolution for PDF pages
 const ICON_DIR = path.join(__dirname, "public", "icons");
 const PORT = process.env.PORT || 4288;
 const THUMB_WIDTH = 360;
 
 // Document categories read in place (not converted). Folder -> display name.
-const DOC_CATEGORIES = [
+const DEFAULT_DOC_CATEGORIES = [
   { dir: "books", name: "Books" },
   { dir: "learning", name: "Learning" },
 ];
+function loadDocCategories() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(CATEGORIES_FILE, "utf8"));
+    if (Array.isArray(arr) && arr.every((c) => c && typeof c.dir === "string" && typeof c.name === "string")) return arr;
+  } catch {}
+  return DEFAULT_DOC_CATEGORIES.slice();
+}
+function saveDocCategories(arr) {
+  fs.mkdirSync(path.dirname(CATEGORIES_FILE), { recursive: true });
+  const tmp = CATEGORIES_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(arr));
+  fs.renameSync(tmp, CATEGORIES_FILE);
+}
+let DOC_CATEGORIES = loadDocCategories();
 const DOC_TYPE = { ".pdf": "pdf", ".epub": "epub" };
 
 const IMG_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;
@@ -489,6 +504,57 @@ app.get("/api/rescan", (req, res) => {
   res.json(catalog);
 });
 
+// Bulk delete: removes underlying files (comics CBZ or doc PDF/EPUB) by id.
+app.post("/api/delete", async (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const removed = [], failed = [];
+  for (const id of ids) {
+    const book = books.get(id);
+    const doc = docs.get(id);
+    try {
+      if (book) {
+        await fsp.unlink(book.file).catch(() => {});
+        await fsp.unlink(path.join(THUMB_DIR, `${id}.jpg`)).catch(() => {});
+        removed.push(id);
+      } else if (doc) {
+        await fsp.unlink(doc.file).catch(() => {});
+        await fsp.unlink(path.join(THUMB_DIR, `${id}.jpg`)).catch(() => {});
+        if (doc.type === "pdf") {
+          await fsp.rm(path.join(PDFPAGE_DIR, id), { recursive: true, force: true }).catch(() => {});
+          pdfDocs.delete(id);
+        }
+        removed.push(id);
+      } else {
+        failed.push(id);
+      }
+    } catch { failed.push(id); }
+  }
+  catalog = scanAll();
+  res.json({ ok: true, removed, failed });
+});
+
+// Document categories: GET reads, POST replaces (and creates any new folders).
+app.get("/api/categories", (req, res) => res.json(DOC_CATEGORIES));
+app.post("/api/categories", (req, res) => {
+  const arr = req.body && req.body.categories;
+  if (!Array.isArray(arr)) return res.status(400).json({ error: "categories[] required" });
+  const clean = [];
+  const seen = new Set();
+  for (const c of arr) {
+    if (!c || typeof c.name !== "string" || typeof c.dir !== "string") continue;
+    const name = safeName(c.name) || c.name.trim();
+    const dir = safeName(c.dir) || c.dir.trim();
+    if (!name || !dir || dir === "comics" || seen.has(dir)) continue; // 'comics' is reserved
+    seen.add(dir);
+    clean.push({ name, dir });
+  }
+  DOC_CATEGORIES = clean;
+  saveDocCategories(clean);
+  for (const c of clean) fs.mkdirSync(path.join(FILES, c.dir), { recursive: true });
+  catalog = scanAll();
+  res.json({ ok: true, categories: clean });
+});
+
 // Upload new content. category: comics | books | learning. series: comics only.
 fs.mkdirSync(UPLOAD_TMP, { recursive: true });
 const upload = multer({ dest: UPLOAD_TMP, limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
@@ -555,7 +621,7 @@ app.post("/api/upload", upload.array("files", 50), async (req, res) => {
           await fsp.unlink(f.path).catch(() => {});
           added.push(name);
         } else { await fsp.unlink(f.path).catch(() => {}); skipped.push(name); }
-      } else if (category === "books" || category === "learning") {
+      } else if (DOC_CATEGORIES.some((c) => c.dir === category)) {
         if (ext === ".pdf" || ext === ".epub") {
           const dir = path.join(FILES, category);
           fs.mkdirSync(dir, { recursive: true });
@@ -576,13 +642,20 @@ app.get("/api/stats", (req, res) => res.json(loadStats()));
 app.post("/api/stats", (req, res) => {
   const pages = Math.max(0, Number(req.body.pages) || 0);
   const ms = Math.max(0, Math.min(120000, Number(req.body.ms) || 0)); // cap any single event at 2 min
+  const id = typeof req.body.id === "string" ? req.body.id : null;
   if (!pages && !ms) return res.json({ ok: true });
   const s = loadStats();
   if (!s.byDay) s.byDay = {};
+  if (!s.byItem) s.byItem = {};
   const k = dayKey();
   if (!s.byDay[k]) s.byDay[k] = { pages: 0, ms: 0 };
   s.byDay[k].pages += pages;
   s.byDay[k].ms += ms;
+  if (id) {
+    if (!s.byItem[id]) s.byItem[id] = { pages: 0, ms: 0 };
+    s.byItem[id].pages += pages;
+    s.byItem[id].ms += ms;
+  }
   s.totalPages = (s.totalPages || 0) + pages;
   s.totalMs = (s.totalMs || 0) + ms;
   writeStats(s);
