@@ -209,6 +209,32 @@ function getPdfDoc(id, file) {
   return pdfDocs.get(id);
 }
 
+// Cap the rendered-PDF page cache on disk; prune oldest when over the limit.
+const PDF_CACHE_CAP = 500 * 1024 * 1024; // 500 MB
+async function cleanupPdfCache() {
+  if (!fs.existsSync(PDFPAGE_DIR)) return;
+  const files = [];
+  async function walk(dir) {
+    let entries; try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else { try { const st = await fsp.stat(p); files.push({ p, size: st.size, t: st.mtimeMs }); } catch {} }
+    }
+  }
+  await walk(PDFPAGE_DIR);
+  let total = files.reduce((s, f) => s + f.size, 0);
+  if (total <= PDF_CACHE_CAP) return;
+  files.sort((a, b) => a.t - b.t); // oldest first
+  const target = PDF_CACHE_CAP * 0.9; // leave headroom so we don't run every minute
+  for (const f of files) {
+    if (total <= target) break;
+    try { await fsp.unlink(f.p); total -= f.size; } catch {}
+  }
+}
+cleanupPdfCache().catch(() => {});
+setInterval(() => cleanupPdfCache().catch(() => {}), 6 * 60 * 60 * 1000);
+
 // Render (and cache to disk) one PDF page as a JPEG. n is 0-based.
 async function getPdfPage(id, file, n) {
   const out = path.join(PDFPAGE_DIR, id, `${n}.jpg`);
@@ -297,16 +323,17 @@ function writeProgress(store) {
 
 // Look up metadata for a title via the free Open Library API.
 async function fetchOpenLibrary(q) {
+  const sig = AbortSignal.timeout(8000); // never hang the request forever
   const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}` +
     `&limit=1&fields=title,author_name,first_publish_year,cover_i,ratings_average,key`;
-  const r = await fetch(url, { headers: { "User-Agent": "book-comic-reader" } });
+  const r = await fetch(url, { signal: sig, headers: { "User-Agent": "book-comic-reader" } });
   const j = await r.json();
   const d = j.docs && j.docs[0];
   if (!d) return { found: false };
   let description = "";
   if (d.key) {
     try {
-      const w = await fetch(`https://openlibrary.org${d.key}.json`).then((x) => x.json());
+      const w = await fetch(`https://openlibrary.org${d.key}.json`, { signal: AbortSignal.timeout(8000) }).then((x) => x.json());
       description = typeof w.description === "string" ? w.description : w.description?.value || "";
     } catch {}
   }
@@ -355,7 +382,13 @@ async function cbrFileToCbz(cbrPath, outFile) {
   });
 }
 
-const safeName = (s) => s.replace(/[\\/:*?"<>|]/g, "_").trim();
+// Strip path separators, Windows-illegal chars, AND .. segments / leading dots
+// so series/category strings can never escape the library root.
+const safeName = (s) =>
+  s.replace(/[\\/:*?"<>|]/g, "_")
+   .replace(/\.{2,}/g, "_")     // collapse "..", "..."
+   .replace(/^\.+/, "")          // no leading dots
+   .trim();
 
 // Build the full catalog: Comics + document categories.
 function scanAll() {

@@ -34,6 +34,10 @@
   <div id="reader" class="view hidden">
     <div id="stage" class="stage">
       <img id="page" alt="" />
+      <div id="spread" class="spread-pair">
+        <img id="page-left" class="spread-img" alt="" />
+        <img id="page-right" class="spread-img" alt="" />
+      </div>
     </div>
     <div id="flip" class="flip hidden">
       <img id="flip-under" class="flip-page" alt="" />
@@ -47,6 +51,9 @@
         <button id="back" class="ghost-btn">‹ Library</button>
         <span id="reader-title"></span>
         <a id="reader-open" class="ghost-btn hidden" target="_blank" rel="noopener" title="Open original PDF">↗</a>
+        <button id="bm-toggle" class="ghost-btn" title="Bookmarks">🔖</button>
+        <button id="spread-toggle" class="ghost-btn hidden" title="Two-page spread">📖</button>
+        <button id="theme-toggle" class="ghost-btn" title="Day / Dim / Sepia">🌞</button>
         <button id="dir-toggle" class="ghost-btn" title="Reading direction">L→R</button>
         <button id="fit-toggle" class="ghost-btn">Fit: Height</button>
       </div>
@@ -59,21 +66,12 @@
     <div id="toast" class="toast hidden"></div>
   </div>
 
-  <!-- PDF viewer (native browser rendering inside an iframe) -->
-  <div id="pdf-view" class="view hidden">
-    <div class="doc-top">
-      <button id="pdf-back" class="ghost-btn">‹ Library</button>
-      <span id="pdf-title" class="doc-title"></span>
-      <a id="pdf-open" class="ghost-btn" target="_blank" rel="noopener">Open ↗</a>
-    </div>
-    <iframe id="pdf-frame" title="PDF document"></iframe>
-  </div>
-
   <!-- EPUB reader (epub.js) -->
   <div id="epub-view" class="view hidden">
     <div class="doc-top">
       <button id="epub-back" class="ghost-btn">‹ Library</button>
       <span id="epub-title" class="doc-title"></span>
+      <button id="bm-toggle-epub" class="ghost-btn" title="Bookmarks">🔖</button>
       <button id="epub-font-dn" class="ghost-btn" title="Smaller text">A−</button>
       <button id="epub-font-up" class="ghost-btn" title="Larger text">A+</button>
     </div>
@@ -97,9 +95,22 @@
           <div id="details-sub" class="details-sub"></div>
           <div id="details-rating" class="details-rating"></div>
           <p id="details-desc" class="details-desc"></p>
-          <button id="details-read" class="primary-btn">Read</button>
+          <div class="details-buttons">
+            <button id="details-read" class="primary-btn">Read</button>
+            <button id="details-finish" class="ghost-btn">Mark finished</button>
+          </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Bookmarks -->
+  <div id="bookmarks" class="modal hidden">
+    <div class="modal-card">
+      <button id="bookmarks-close" class="modal-close" title="Close">×</button>
+      <h2 class="bookmarks-title">Bookmarks</h2>
+      <button id="bookmarks-add" class="primary-btn">+ Add this page</button>
+      <ul id="bookmarks-list" class="bookmarks-list"></ul>
     </div>
   </div>
 

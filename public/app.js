@@ -28,6 +28,10 @@ const els = {
   back: document.getElementById("back"),
   fitToggle: document.getElementById("fit-toggle"),
   dirToggle: document.getElementById("dir-toggle"),
+  themeToggle: document.getElementById("theme-toggle"),
+  spreadToggle: document.getElementById("spread-toggle"),
+  pageLeft: document.getElementById("page-left"),
+  pageRight: document.getElementById("page-right"),
   readerOpen: document.getElementById("reader-open"),
   slider: document.getElementById("slider"),
   counter: document.getElementById("counter"),
@@ -40,11 +44,6 @@ const els = {
   flipFront: document.getElementById("flip-front"),
   flipShade: document.querySelector("#flip .flip-shade"),
   // Document readers
-  pdfView: document.getElementById("pdf-view"),
-  pdfFrame: document.getElementById("pdf-frame"),
-  pdfTitle: document.getElementById("pdf-title"),
-  pdfOpen: document.getElementById("pdf-open"),
-  pdfBack: document.getElementById("pdf-back"),
   epubView: document.getElementById("epub-view"),
   epubArea: document.getElementById("epub-area"),
   epubTitle: document.getElementById("epub-title"),
@@ -64,6 +63,14 @@ const els = {
   detailsRating: document.getElementById("details-rating"),
   detailsDesc: document.getElementById("details-desc"),
   detailsRead: document.getElementById("details-read"),
+  detailsFinish: document.getElementById("details-finish"),
+  // Bookmarks
+  bmToggle: document.getElementById("bm-toggle"),
+  bmToggleEpub: document.getElementById("bm-toggle-epub"),
+  bookmarks: document.getElementById("bookmarks"),
+  bookmarksClose: document.getElementById("bookmarks-close"),
+  bookmarksAdd: document.getElementById("bookmarks-add"),
+  bookmarksList: document.getElementById("bookmarks-list"),
 };
 
 const state = {
@@ -74,6 +81,7 @@ const state = {
   pageCount: 0,
   index: 0,
   rtl: false,        // right-to-left (manga) reading direction
+  spread: localStorage.getItem("spread") === "1",
   // Default: fit-width on portrait/phone screens, fit-height on wide desktop.
   fit: localStorage.getItem("fit") || (window.innerHeight > window.innerWidth ? "width" : "height"),
 };
@@ -153,7 +161,9 @@ function persistProgress(id, rec) {
 
 function saveProgress() {
   if (!state.src) return;
-  persistProgress(state.src.id, { index: state.index, pageCount: state.pageCount, t: Date.now() });
+  const prev = readProgress(state.src.id) || {};
+  // Merge so finished flag / bookmarks survive a regular page turn.
+  persistProgress(state.src.id, { ...prev, index: state.index, pageCount: state.pageCount, t: Date.now() });
 }
 function saveDocProgress(id, extra) {
   const prev = readProgress(id) || {};
@@ -222,6 +232,24 @@ function renderFilterChips() {
 function matchesSearch(item) {
   return !searchText || item.title.toLowerCase().includes(searchText);
 }
+function isFinished(item) {
+  const p = readProgress(item.id);
+  return !!(p && p.finished);
+}
+function unfinishedItems(items) { return items.filter((i) => !isFinished(i)); }
+function finishedAcrossAll() {
+  const out = [];
+  for (const cat of catalog.categories) {
+    if (activeCategory !== null && cat.name !== activeCategory) continue;
+    for (const shelf of cat.shelves) {
+      for (const it of shelf.items) {
+        if (isFinished(it) && matchesSearch(it)) out.push({ item: it, t: (readProgress(it.id) || {}).t || 0 });
+      }
+    }
+  }
+  out.sort((a, b) => b.t - a.t);
+  return out.map((r) => r.item);
+}
 
 // Every item across the whole catalog (flattened).
 function allItems() {
@@ -249,11 +277,12 @@ function continueReading() {
   for (const it of allItems()) {
     const p = readProgress(it.id);
     if (!p || !p.t) continue;
+    if (p.finished) continue;                                  // explicitly finished
     if (it.type === "comic" || it.type === "pdf") {
-      if (!(p.index > 0)) continue;                     // not really started
-      if (p.pageCount && p.index >= p.pageCount - 1) continue; // finished
+      if (!(p.index > 0)) continue;                            // not really started
+      if (p.pageCount && p.index >= p.pageCount - 1) continue; // hit the last page
     }
-    if (it.type === "epub" && p.percent >= 0.99) continue;     // finished
+    if (it.type === "epub" && p.percent >= 0.99) continue;     // hit the end
     rows.push({ item: it, t: p.t });
   }
   rows.sort((a, b) => b.t - a.t);
@@ -296,7 +325,7 @@ function renderLibrary() {
   for (const cat of catalog.categories) {
     if (activeCategory !== null && cat.name !== activeCategory) continue;
     const shelves = cat.shelves
-      .map((s) => ({ title: s.title, items: s.items.filter(matchesSearch) }))
+      .map((s) => ({ title: s.title, items: unfinishedItems(s.items.filter(matchesSearch)) }))
       .filter((s) => s.items.length);
     if (!shelves.length) continue;
 
@@ -317,6 +346,20 @@ function renderLibrary() {
       shown += shelf.items.length;
     }
     els.shelves.appendChild(sec);
+  }
+
+  // Finished items shelf at the bottom (always added if any).
+  const fin = finishedAcrossAll();
+  if (fin.length) {
+    const sec = document.createElement("section");
+    sec.className = "category";
+    const h = document.createElement("h2");
+    h.className = "category-title";
+    h.textContent = "Finished";
+    sec.appendChild(h);
+    sec.appendChild(shelfRow(fin));
+    els.shelves.appendChild(sec);
+    shown += fin.length;
   }
 
   if (filtering && shown === 0) {
@@ -401,6 +444,7 @@ async function openDetails(item) {
   els.detailsSub.textContent = "Looking up…";
   els.detailsRating.textContent = "";
   els.detailsDesc.textContent = "";
+  refreshFinishButton();
   const local = coverUrlFor(item);
   els.detailsCover.onerror = () => { els.detailsCover.onerror = null; els.detailsCover.src = local; };
   els.detailsCover.src = local;
@@ -423,6 +467,112 @@ async function openDetails(item) {
 }
 function closeDetails() { els.details.classList.add("hidden"); detailsItem = null; }
 
+function refreshFinishButton() {
+  if (!detailsItem) return;
+  els.detailsFinish.textContent = isFinished(detailsItem) ? "Mark unfinished" : "Mark finished";
+}
+// ---------- Bookmarks ----------
+function currentBookmarkId() {
+  if (state.src) return state.src.id;
+  if (state.view === "epub" && state.doc) return state.doc.id;
+  return null;
+}
+function currentBookmarkValue() {
+  if (state.view === "epub") {
+    const loc = epubRendition && epubRendition.currentLocation();
+    return loc && loc.start && loc.start.cfi;
+  }
+  return typeof state.index === "number" ? state.index : null;
+}
+function bookmarkLabel(b) {
+  return typeof b.v === "number" ? `Page ${b.v + 1}` : "Bookmark";
+}
+function isCurrentBookmarked() {
+  const id = currentBookmarkId();
+  if (!id) return false;
+  const list = (readProgress(id) || {}).bookmarks || [];
+  return list.some((b) => b.v === currentBookmarkValue());
+}
+function addBookmarkCurrent() {
+  const id = currentBookmarkId();
+  const v = currentBookmarkValue();
+  if (!id || v === null || v === undefined) return;
+  const prev = readProgress(id) || {};
+  const list = Array.isArray(prev.bookmarks) ? prev.bookmarks.slice() : [];
+  if (list.some((b) => b.v === v)) return;
+  list.push({ v, t: Date.now() });
+  list.sort((a, b) => (typeof a.v === "number" && typeof b.v === "number") ? a.v - b.v : 0);
+  persistProgress(id, { ...prev, bookmarks: list, t: Date.now() });
+}
+function removeBookmark(v) {
+  const id = currentBookmarkId();
+  if (!id) return;
+  const prev = readProgress(id) || {};
+  const list = (prev.bookmarks || []).filter((b) => b.v !== v);
+  persistProgress(id, { ...prev, bookmarks: list, t: Date.now() });
+}
+function toggleBookmarkCurrent() {
+  if (isCurrentBookmarked()) removeBookmark(currentBookmarkValue());
+  else addBookmarkCurrent();
+  renderBookmarks();
+  refreshBmAddBtn();
+}
+function gotoBookmark(v) {
+  closeBookmarks();
+  if (state.view === "epub" && epubRendition) epubRendition.display(v);
+  else if (typeof v === "number") showPage(v);
+}
+function refreshBmAddBtn() {
+  els.bookmarksAdd.textContent = isCurrentBookmarked() ? "Remove this page" : "+ Add this page";
+}
+function renderBookmarks() {
+  const id = currentBookmarkId();
+  const list = id ? ((readProgress(id) || {}).bookmarks || []) : [];
+  els.bookmarksList.innerHTML = "";
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "bookmark-empty";
+    li.textContent = "No bookmarks yet.";
+    els.bookmarksList.appendChild(li);
+    return;
+  }
+  for (const b of list) {
+    const li = document.createElement("li");
+    li.className = "bookmark-row";
+    const label = document.createElement("span");
+    label.textContent = bookmarkLabel(b);
+    const right = document.createElement("div");
+    right.className = "right";
+    const go = document.createElement("button");
+    go.className = "bookmark-go";
+    go.textContent = "Go";
+    go.addEventListener("click", () => gotoBookmark(b.v));
+    const rm = document.createElement("button");
+    rm.className = "bookmark-remove";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => { removeBookmark(b.v); renderBookmarks(); refreshBmAddBtn(); });
+    right.append(go, rm);
+    li.append(label, right);
+    els.bookmarksList.appendChild(li);
+  }
+}
+function openBookmarks() {
+  if (!currentBookmarkId()) return;
+  renderBookmarks();
+  refreshBmAddBtn();
+  els.bookmarks.classList.remove("hidden");
+}
+function closeBookmarks() { els.bookmarks.classList.add("hidden"); }
+
+function toggleFinished() {
+  if (!detailsItem) return;
+  const prev = readProgress(detailsItem.id) || {};
+  persistProgress(detailsItem.id, { ...prev, finished: !prev.finished, t: Date.now() });
+  refreshFinishButton();
+  renderLibrary(); // moves the item between Continue Reading / categories / Finished
+  showToast(prev.finished ? "Marked as unfinished" : "Marked as finished");
+}
+
 // Route an item to the right reader.
 function openItem(item) {
   if (item.type === "comic") openBook(item);
@@ -442,11 +592,11 @@ async function openBook(vol, startAt = null) {
   els.readerOpen.classList.add("hidden");
   els.dirToggle.classList.remove("hidden");
   els.library.classList.add("hidden");
-  els.pdfView.classList.add("hidden");
   els.epubView.classList.add("hidden");
   els.reader.classList.remove("hidden");
   applyFit();
   applyDir();
+  applySpread();
 
   const res = await fetch(`/api/book/${vol.id}/info`);
   const info = await res.json();
@@ -468,10 +618,8 @@ async function openBook(vol, startAt = null) {
 function leaveViewer() {
   if (epubRendition) { try { epubBook.destroy(); } catch {} epubRendition = null; epubBook = null; }
   els.reader.classList.add("hidden");
-  els.pdfView.classList.add("hidden");
   els.epubView.classList.add("hidden");
   els.page.removeAttribute("src");
-  els.pdfFrame.src = "about:blank";
   els.epubArea.innerHTML = "";
   state.book = null;
   state.doc = null;
@@ -494,14 +642,21 @@ function pageUrl(i) {
 function showPage(i) {
   if (i < 0 || i >= state.pageCount) return;
   state.index = i;
+  if (state.spread) {
+    els.pageLeft.src = pageUrl(i);
+    const hasRight = i + 1 < state.pageCount;
+    els.pageRight.src = hasRight ? pageUrl(i + 1) : "";
+    els.pageRight.style.visibility = hasRight ? "visible" : "hidden";
+    els.slider.value = i;
+    els.counter.textContent = hasRight ? `${i + 1}-${i + 2} / ${state.pageCount}` : `${i + 1} / ${state.pageCount}`;
+    saveProgress();
+    preload(i + 2); preload(i + 3);
+    return;
+  }
   els.spinner.classList.remove("hidden");
-  els.page.onload = () => {
-    els.spinner.classList.add("hidden");
-    resetView();
-  };
+  els.page.onload = () => { els.spinner.classList.add("hidden"); resetView(); };
   els.page.onerror = () => els.spinner.classList.add("hidden");
   els.page.src = pageUrl(i);
-
   els.slider.value = i;
   els.counter.textContent = `${i + 1} / ${state.pageCount}`;
   saveProgress();
@@ -515,16 +670,20 @@ function preload(i) {
 
 function next() {
   if (flipBusy) return;
+  const step = state.spread ? 2 : 1;
+  const target = state.index + step;
   if (state.index < state.pageCount - 1) {
-    if (animatedTurn(true)) return;       // animate when possible
-    showPage(state.index + 1);
-  } else if (state.book) openAdjacentVolume(1); // auto-next only applies to comic series
+    if (!state.spread && animatedTurn(true)) return;
+    showPage(Math.min(target, state.pageCount - 1));
+  } else if (state.book) openAdjacentVolume(1);
 }
 function prev() {
   if (flipBusy) return;
+  const step = state.spread ? 2 : 1;
+  const target = state.index - step;
   if (state.index > 0) {
-    if (animatedTurn(false)) return;
-    showPage(state.index - 1);
+    if (!state.spread && animatedTurn(false)) return;
+    showPage(Math.max(target, 0));
   } else if (state.book) openAdjacentVolume(-1);
 }
 
@@ -556,11 +715,11 @@ async function openPdf(item) {
   els.readerOpen.classList.remove("hidden");   // crisp native view, on demand
   els.dirToggle.classList.add("hidden");        // direction is meaningless for PDFs
   els.library.classList.add("hidden");
-  els.pdfView.classList.add("hidden");
   els.epubView.classList.add("hidden");
   els.reader.classList.remove("hidden");
   applyFit();
   applyDir();
+  applySpread();
 
   const info = await fetch(`/api/doc/${item.id}/info`).then((r) => r.json()).catch(() => ({}));
   state.pageCount = info.pageCount || 1;
@@ -582,7 +741,6 @@ async function openEpub(item) {
   els.epubTitle.textContent = item.title;
   els.library.classList.add("hidden");
   els.reader.classList.add("hidden");
-  els.pdfView.classList.add("hidden");
   els.epubView.classList.remove("hidden");
   els.epubArea.innerHTML = "";
   els.epubPct.textContent = "…";
@@ -647,6 +805,42 @@ function toggleFit() {
   resetView();
 }
 
+// ---------- Two-page spread (desktop) ----------
+function applySpread() {
+  const wide = window.innerWidth >= 900;
+  els.spreadToggle.classList.toggle("hidden", !(wide && state.view === "comic"));
+  els.stage.classList.toggle("spread", state.spread);
+  els.stage.classList.toggle("rtl", state.rtl);
+}
+function toggleSpread() {
+  state.spread = !state.spread;
+  localStorage.setItem("spread", state.spread ? "1" : "0");
+  applySpread();
+  if (state.src) showPage(state.index);
+}
+
+// ---------- Page theme (Day / Dim / Sepia) ----------
+const PAGE_THEMES = [
+  { id: "day",   label: "🌞", dim: 1.0, sep: 0,   toast: "Day" },
+  { id: "dim",   label: "🌙", dim: 0.55, sep: 0,  toast: "Dim" },
+  { id: "sepia", label: "📜", dim: 0.85, sep: 0.55, toast: "Sepia" },
+];
+let pageTheme = PAGE_THEMES.find((t) => t.id === localStorage.getItem("pageTheme")) || PAGE_THEMES[0];
+function applyTheme() {
+  document.documentElement.style.setProperty("--dim", pageTheme.dim);
+  document.documentElement.style.setProperty("--sep", pageTheme.sep);
+  els.themeToggle.textContent = pageTheme.label;
+  els.themeToggle.title = `Theme: ${pageTheme.toast}`;
+}
+function cycleTheme() {
+  const i = PAGE_THEMES.indexOf(pageTheme);
+  pageTheme = PAGE_THEMES[(i + 1) % PAGE_THEMES.length];
+  localStorage.setItem("pageTheme", pageTheme.id);
+  applyTheme();
+  showToast(`Theme: ${pageTheme.toast}`);
+}
+applyTheme(); // run once on load
+
 // ---------- Reading direction (LTR / RTL manga) ----------
 function applyDir() {
   els.dirToggle.textContent = state.rtl ? "R→L" : "L→R";
@@ -699,7 +893,7 @@ function animatedTurn(forward) {
 
 // Begin a flip in response to a horizontal drag. dirSign: -1 left, +1 right.
 function startFlip(dirSign) {
-  if (!state.src || view.scale > 1.01) return false;
+  if (!state.src || view.scale > 1.01 || state.spread) return false;
   const forward = dirSign < 0 ? !state.rtl : state.rtl; // left-drag advances in LTR
   const target = state.index + (forward ? 1 : -1);
   if (target < 0 || target >= state.pageCount) return false; // no page to turn to
@@ -900,6 +1094,8 @@ els.stage.addEventListener("wheel", (e) => {
 els.back.addEventListener("click", leaveViewer);
 els.fitToggle.addEventListener("click", toggleFit);
 els.dirToggle.addEventListener("click", toggleDir);
+els.themeToggle.addEventListener("click", cycleTheme);
+els.spreadToggle.addEventListener("click", toggleSpread);
 els.rescan.addEventListener("click", async () => {
   await fetch("/api/rescan");
   loadLibrary();
@@ -1043,7 +1239,6 @@ setInterval(async () => {
 }, 15000);
 
 // Document reader controls
-els.pdfBack.addEventListener("click", leaveViewer);
 els.epubBack.addEventListener("click", leaveViewer);
 els.epubPrev.addEventListener("click", () => epubRendition && epubRendition.prev());
 els.epubNext.addEventListener("click", () => epubRendition && epubRendition.next());
@@ -1058,10 +1253,22 @@ els.epubSlider.addEventListener("change", (e) => {
 els.detailsClose.addEventListener("click", closeDetails);
 els.details.addEventListener("click", (e) => { if (e.target === els.details) closeDetails(); });
 els.detailsRead.addEventListener("click", () => { const it = detailsItem; closeDetails(); if (it) openItem(it); });
+els.detailsFinish.addEventListener("click", toggleFinished);
+
+// Bookmarks
+els.bmToggle.addEventListener("click", openBookmarks);
+els.bmToggleEpub.addEventListener("click", openBookmarks);
+els.bookmarksClose.addEventListener("click", closeBookmarks);
+els.bookmarks.addEventListener("click", (e) => { if (e.target === els.bookmarks) closeBookmarks(); });
+els.bookmarksAdd.addEventListener("click", toggleBookmarkCurrent);
 
 document.addEventListener("keydown", (e) => {
   if (!els.wizard.classList.contains("hidden")) {
     if (e.key === "Escape") closeWizard();
+    return;
+  }
+  if (!els.bookmarks.classList.contains("hidden")) {
+    if (e.key === "Escape") closeBookmarks();
     return;
   }
   if (!els.details.classList.contains("hidden")) {
@@ -1072,10 +1279,6 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") epubRendition && epubRendition.prev();
     else if (e.key === "ArrowRight") epubRendition && epubRendition.next();
     else if (e.key === "Escape") leaveViewer();
-    return;
-  }
-  if (state.view === "pdf") {
-    if (e.key === "Escape") leaveViewer();
     return;
   }
   if (!state.src) return;
@@ -1091,7 +1294,10 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "0") resetView();
 });
 
-window.addEventListener("resize", () => { if (state.src) resetView(); });
+window.addEventListener("resize", () => {
+  applySpread();
+  if (state.src && !state.spread) resetView();
+});
 
 window.addEventListener("hashchange", () => {
   const inViewer = /^#(read|pdf|epub)\//.test(location.hash);

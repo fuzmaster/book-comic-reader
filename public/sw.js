@@ -2,8 +2,8 @@
 // reader works offline. Note: service workers only run in a secure context
 // (https or localhost), so offline caching is active on the desktop and on a
 // phone only if the server is reached over https.
-const SHELL = "comic-shell-v7";
-const MEDIA = "comic-media-v7";
+const SHELL = "comic-shell-v8";
+const MEDIA = "comic-media-v8";
 const SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -40,8 +40,9 @@ self.addEventListener("fetch", (e) => {
   // store — let them pass straight through to the network.
   if (/\/api\/doc\/[^/]+\/file/.test(url.pathname)) return;
 
-  // Comic pages and covers: cache-first, so opened pages stay available offline.
-  if (/\/api\/book\/[^/]+\/(page\/\d+|cover)/.test(url.pathname)) {
+  // Page images and covers (comics and rendered PDF pages alike): cache-first
+  // in the long-lived MEDIA cache so opened pages survive app updates.
+  if (/\/api\/(book|doc)\/[^/]+\/(page\/\d+|cover)/.test(url.pathname)) {
     e.respondWith(
       caches.open(MEDIA).then(async (cache) => {
         const hit = await cache.match(req);
